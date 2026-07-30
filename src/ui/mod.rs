@@ -98,6 +98,8 @@ pub struct Desktop {
     entries: Vec<Entry>,
     placed: Vec<Placed>,
     selection: Selection,
+    /// Programs started by a double-click, kept only so they can be reaped; see `reap`.
+    children: Vec<std::process::Child>,
 
     dirty: bool,
     exit: bool,
@@ -178,6 +180,7 @@ pub fn run() -> Result<(), String> {
         entries: Vec::new(),
         placed: Vec::new(),
         selection: Selection::default(),
+        children: Vec::new(),
         dirty: true,
         exit: false,
     };
@@ -221,6 +224,7 @@ pub fn run() -> Result<(), String> {
         desktop.draw_if_dirty();
         // Only writes when something actually changed; see `State::is_dirty`.
         desktop.saved.save();
+        desktop.reap();
         if desktop.exit {
             return Ok(());
         }
@@ -331,6 +335,51 @@ impl Desktop {
 
         self.layer = Some(layer);
         self.output = Some(output);
+    }
+
+    /// Open the icon called `name`: a launcher runs, anything else goes to the opener.
+    ///
+    /// A refusal is reported rather than swallowed. There is no way to put a dialog on screen
+    /// yet, so the session log is the only place it can go -- and a double-click that silently
+    /// does nothing is the worst of both worlds.
+    fn activate(&mut self, name: &str) {
+        let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .cloned()
+        else {
+            return;
+        };
+        match crate::open::open(&entry, &self.config) {
+            Ok(child) => {
+                eprintln!("wlrix-desktop: opened {} (pid {})", entry.name, child.id());
+                self.children.push(child);
+            }
+            Err(why) => eprintln!("wlrix-desktop: {why}"),
+        }
+    }
+
+    /// Clear away children that have exited.
+    ///
+    /// Nothing waits on a launched program -- it outlives the double-click by design -- so
+    /// without this each one left a zombie behind for the life of the session. `try_wait` does
+    /// not block, so this is safe to call every turn of the loop.
+    fn reap(&mut self) {
+        self.children.retain_mut(|child| match child.try_wait() {
+            // Still running: keep it.
+            Ok(None) => true,
+            Ok(Some(status)) => {
+                // A launcher that dies immediately is worth a line; one that ran and finished
+                // normally is not.
+                if !status.success() {
+                    eprintln!("wlrix-desktop: a launched program exited with {status}");
+                }
+                false
+            }
+            // Already reaped, or not ours any more. Either way, stop tracking it.
+            Err(_) => false,
+        });
     }
 
     /// Paint, if anything changed.
@@ -546,8 +595,13 @@ impl PointerHandler for Desktop {
                 PointerEventKind::Leave { .. } => {
                     self.dirty |= self.selection.leave();
                 }
-                PointerEventKind::Press { button, .. } if button == BTN_LEFT => {
-                    self.dirty |= self.selection.press(&self.placed, point);
+                PointerEventKind::Press { button, time, .. } if button == BTN_LEFT => {
+                    let pressed = self.selection.press(&self.placed, point, time);
+                    self.dirty |= pressed.changed;
+                    // A double-click opens what it landed on.
+                    if let Some(name) = pressed.activate {
+                        self.activate(&name);
+                    }
                 }
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
                     let grid = self.grid();

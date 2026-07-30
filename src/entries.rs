@@ -32,6 +32,14 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// Classify one path, as [`read`] would. `None` for anything that should not show.
+    ///
+    /// Public so `examples/explain_open` can ask about a single file without reading a whole
+    /// directory to find it.
+    pub fn at(path: &Path) -> Option<Self> {
+        Self::from_path(path)
+    }
+
     /// Classify one directory entry. `None` for anything that should not show.
     fn from_path(path: &Path) -> Option<Self> {
         let name = path.file_name()?.to_str()?.to_owned();

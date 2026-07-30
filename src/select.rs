@@ -16,6 +16,9 @@ use crate::layout::{Grid, Placed, Point, Spot};
 /// How far the pointer must travel after a press before it counts as a drag.
 const DRAG_THRESHOLD: f64 = 6.0;
 
+/// How close together two presses on the same icon have to be to open it, in milliseconds.
+const DOUBLE_CLICK_MS: u32 = 400;
+
 /// An in-progress drag.
 #[derive(Debug, Clone, PartialEq)]
 struct Drag {
@@ -38,6 +41,18 @@ pub struct Selection {
     hovered: Option<String>,
     selected: Option<String>,
     drag: Option<Drag>,
+    /// The last press on an icon: which, and when. A second press on the same icon soon
+    /// enough is a double-click, which opens it.
+    last_press: Option<(String, u32)>,
+}
+
+/// What a press amounted to.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Pressed {
+    /// Whether anything visible changed, so the desktop should redraw.
+    pub changed: bool,
+    /// Set when the press completed a double-click: open this icon.
+    pub activate: Option<String>,
 }
 
 /// What a drop settled on, for the caller to remember and save.
@@ -124,26 +139,48 @@ impl Selection {
     }
 
     /// A press. Selects whatever is under the pointer -- or clears the selection if that is
-    /// bare desktop -- and arms a possible drag. Returns whether anything changed.
-    pub fn press(&mut self, placed: &[Placed], point: Point) -> bool {
+    /// bare desktop -- arms a possible drag, and reports a double-click.
+    ///
+    /// `time` is the pointer event's own millisecond stamp, which is what decides whether this
+    /// press is the second half of a double-click.
+    pub fn press(&mut self, placed: &[Placed], point: Point, time: u32) -> Pressed {
         let Some(item) = icon_at(placed, point) else {
-            // Bare desktop: deselect.
+            // Bare desktop: deselect, and a following click on an icon starts fresh.
             let changed = self.selected.is_some();
             self.selected = None;
             self.drag = None;
-            return changed;
+            self.last_press = None;
+            return Pressed {
+                changed,
+                activate: None,
+            };
         };
+        let name = item.entry.name.clone();
 
-        let changed = self.selected.as_deref() != Some(item.entry.name.as_str());
-        self.selected = Some(item.entry.name.clone());
+        // The second press on the same icon, soon enough, opens it. `wrapping_sub` because the
+        // pointer's clock is a free-running `u32` of milliseconds and does wrap.
+        let doubled = self
+            .last_press
+            .as_ref()
+            .is_some_and(|(last, at)| *last == name && time.wrapping_sub(*at) <= DOUBLE_CLICK_MS);
+
+        // Cleared on a double-click, so a third press starts a new pair rather than opening
+        // the icon again.
+        self.last_press = (!doubled).then(|| (name.clone(), time));
+
+        let changed = self.selected.as_deref() != Some(name.as_str());
+        self.selected = Some(name.clone());
         self.drag = Some(Drag {
-            name: item.entry.name.clone(),
+            name: name.clone(),
             grab: Point::new(point.x - item.rect.x, point.y - item.rect.y),
             press: point,
             current: point,
             moved: false,
         });
-        changed
+        Pressed {
+            changed,
+            activate: doubled.then_some(name),
+        }
     }
 
     /// Pointer motion while a button is held. Returns whether the icon moved.
@@ -160,6 +197,9 @@ impl Selection {
         let dy = f64::from(point.y - drag.press.y);
         if dx * dx + dy * dy >= DRAG_THRESHOLD * DRAG_THRESHOLD {
             drag.moved = true;
+            // Moving an icon is not half of a double-click: drag it somewhere and click it
+            // once, and it should select, not open.
+            self.last_press = None;
             return true;
         }
         false
@@ -228,6 +268,16 @@ mod tests {
             .collect()
     }
 
+    /// A press with a timestamp far from any other, so it is never half of a double-click.
+    ///
+    /// Tests that care about the double-click clock pass their own times instead.
+    fn press(selection: &mut Selection, placed: &[Placed], point: Point) -> Pressed {
+        // Each call is a full threshold-and-then-some later than the last.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let time = NEXT.fetch_add(DOUBLE_CLICK_MS * 10, std::sync::atomic::Ordering::Relaxed);
+        selection.press(placed, point, time)
+    }
+
     fn centre(item: &Placed) -> Point {
         Point::new(item.rect.x + item.rect.w / 2, item.rect.y + item.rect.h / 2)
     }
@@ -255,15 +305,15 @@ mod tests {
         let placed = placed(&["a", "b"]);
         let mut selection = Selection::default();
 
-        selection.press(&placed, centre(&placed[0]));
+        press(&mut selection, &placed, centre(&placed[0]));
         assert_eq!(selection.selected(), Some("a"));
         selection.release(&grid(), false);
 
-        selection.press(&placed, centre(&placed[1]));
+        press(&mut selection, &placed, centre(&placed[1]));
         assert_eq!(selection.selected(), Some("b"));
         selection.release(&grid(), false);
 
-        selection.press(&placed, Point::new(5, 400));
+        press(&mut selection, &placed, Point::new(5, 400));
         assert_eq!(selection.selected(), None);
     }
 
@@ -275,7 +325,7 @@ mod tests {
         let mut selection = Selection::default();
         let start = centre(&placed[0]);
 
-        selection.press(&placed, start);
+        press(&mut selection, &placed, start);
         selection.motion(Point::new(start.x + 2, start.y + 1));
         assert_eq!(selection.dragging(), None, "2px is not a drag");
         assert_eq!(selection.release(&grid(), false), None);
@@ -287,7 +337,7 @@ mod tests {
         let mut selection = Selection::default();
         let start = centre(&placed[0]);
 
-        selection.press(&placed, start);
+        press(&mut selection, &placed, start);
         // Left and down, away from the corner: dragging the top-right icon further right
         // would hit the clamp, which is its own test below.
         selection.motion(Point::new(start.x - 40, start.y + 40));
@@ -314,7 +364,7 @@ mod tests {
         let mut selection = Selection::default();
         let start = centre(&placed[0]);
 
-        selection.press(&placed, start);
+        press(&mut selection, &placed, start);
         selection.motion(Point::new(start.x + 400, start.y + 400));
         let dropped = selection.release(&grid, false).expect("should have moved");
         let Spot::Free(point) = dropped.spot else {
@@ -331,7 +381,7 @@ mod tests {
         let mut selection = Selection::default();
         let start = centre(&placed[0]);
 
-        selection.press(&placed, start);
+        press(&mut selection, &placed, start);
         // Somewhere over towards the middle of the screen.
         selection.motion(Point::new(start.x - 300, start.y + 200));
         let dropped = selection.release(&grid, true).expect("should have moved");
@@ -349,7 +399,7 @@ mod tests {
         let start = centre(&placed[0]);
 
         selection.hover(&placed, start);
-        selection.press(&placed, start);
+        press(&mut selection, &placed, start);
         selection.motion(Point::new(start.x + 40, start.y + 40));
         assert!(!selection.hover(&placed, centre(&placed[1])));
         assert_eq!(selection.hovered(), Some("a"));
@@ -362,7 +412,7 @@ mod tests {
         // Grab near the icon's bottom-right, not its center.
         let grab = Point::new(placed[0].rect.x + 70, placed[0].rect.y + 60);
 
-        selection.press(&placed, grab);
+        press(&mut selection, &placed, grab);
         selection.motion(Point::new(grab.x + 100, grab.y + 100));
         let origin = selection.drag_origin().expect("should be dragging");
         // Still 70,60 in from the pointer -- the icon did not jump to center itself.
@@ -375,7 +425,7 @@ mod tests {
         let placed = placed(&["a", "b"]);
         let mut selection = Selection::default();
         selection.hover(&placed, centre(&placed[0]));
-        selection.press(&placed, centre(&placed[0]));
+        press(&mut selection, &placed, centre(&placed[0]));
         selection.release(&grid(), false);
 
         selection.retain_only(&["b".to_owned()]);
@@ -389,7 +439,110 @@ mod tests {
         let mut placed = placed(&["under", "over"]);
         placed[1].rect = placed[0].rect;
         let mut selection = Selection::default();
-        selection.press(&placed, centre(&placed[0]));
+        press(&mut selection, &placed, centre(&placed[0]));
         assert_eq!(selection.selected(), Some("over"));
+    }
+
+    // --- double-click ---------------------------------------------------------------
+
+    #[test]
+    fn two_quick_presses_on_one_icon_open_it() {
+        let placed = placed(&["a", "b"]);
+        let mut selection = Selection::default();
+        let at = centre(&placed[0]);
+
+        let first = selection.press(&placed, at, 1_000);
+        assert_eq!(first.activate, None, "one press only selects");
+        let second = selection.press(&placed, at, 1_100);
+        assert_eq!(second.activate.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn two_slow_presses_do_not() {
+        let placed = placed(&["a"]);
+        let mut selection = Selection::default();
+        let at = centre(&placed[0]);
+
+        selection.press(&placed, at, 1_000);
+        let second = selection.press(&placed, at, 1_000 + DOUBLE_CLICK_MS + 1);
+        assert_eq!(second.activate, None);
+    }
+
+    #[test]
+    fn two_presses_on_different_icons_do_not() {
+        let placed = placed(&["a", "b"]);
+        let mut selection = Selection::default();
+
+        selection.press(&placed, centre(&placed[0]), 1_000);
+        let second = selection.press(&placed, centre(&placed[1]), 1_050);
+        assert_eq!(
+            second.activate, None,
+            "different icons are not a double-click"
+        );
+    }
+
+    #[test]
+    fn a_third_press_does_not_open_it_again() {
+        // Otherwise a rapid triple-click launches twice.
+        let placed = placed(&["a"]);
+        let mut selection = Selection::default();
+        let at = centre(&placed[0]);
+
+        selection.press(&placed, at, 1_000);
+        assert!(selection.press(&placed, at, 1_080).activate.is_some());
+        assert_eq!(selection.press(&placed, at, 1_160).activate, None);
+        // ...but a fresh pair after that does open it again.
+        assert!(selection.press(&placed, at, 1_240).activate.is_some());
+    }
+
+    #[test]
+    fn a_click_on_bare_desktop_between_the_two_breaks_it_up() {
+        let placed = placed(&["a"]);
+        let mut selection = Selection::default();
+        let at = centre(&placed[0]);
+
+        selection.press(&placed, at, 1_000);
+        selection.press(&placed, Point::new(5, 400), 1_050);
+        let third = selection.press(&placed, at, 1_100);
+        assert_eq!(third.activate, None);
+    }
+
+    #[test]
+    fn dragging_an_icon_does_not_arm_a_double_click() {
+        // Drag an icon somewhere and click it once: that should select, not open.
+        let placed = placed(&["a"]);
+        let mut selection = Selection::default();
+        let at = centre(&placed[0]);
+
+        selection.press(&placed, at, 1_000);
+        selection.motion(Point::new(at.x - 60, at.y + 60));
+        selection.release(&grid(), false);
+
+        let next = selection.press(&placed, at, 1_100);
+        assert_eq!(next.activate, None);
+    }
+
+    #[test]
+    fn the_pointer_clock_wrapping_is_not_a_double_click_storm() {
+        // `time` is a free-running u32 of milliseconds and does wrap. Two presses either side
+        // of the wrap are milliseconds apart in real time, so they *are* a double-click --
+        // what must not happen is the subtraction going enormous and every press counting.
+        let placed = placed(&["a"]);
+        let mut selection = Selection::default();
+        let at = centre(&placed[0]);
+
+        selection.press(&placed, at, u32::MAX - 50);
+        let across = selection.press(&placed, at, 49);
+        assert_eq!(
+            across.activate.as_deref(),
+            Some("a"),
+            "100ms apart across the wrap"
+        );
+
+        // And a genuinely distant pair still does not open.
+        let mut selection = Selection::default();
+        selection.press(&placed, at, u32::MAX - 50);
+        let far = selection.press(&placed, at, 5_000);
+        assert_eq!(far.activate, None);
     }
 }

@@ -5,8 +5,10 @@
 //! be exercised by tests without a compositor.
 
 pub mod config;
+pub mod desktop_entry;
 pub mod entries;
 pub mod layout;
+pub mod open;
 pub mod select;
 pub mod state;
 pub mod theme;

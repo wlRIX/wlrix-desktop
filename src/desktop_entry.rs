@@ -1,0 +1,552 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Reading freedesktop `.desktop` files.
+//!
+//! Enough of the [Desktop Entry Specification][spec] to launch one: the `[Desktop Entry]`
+//! group, the handful of keys that decide *what* to run, and the spec's own rules for turning
+//! an `Exec=` line into an argument vector.
+//!
+//! [spec]: https://specifications.freedesktop.org/desktop-entry-spec/latest/
+//!
+//! Deliberately not a general parser. Other groups (`[Desktop Action …]`), localized keys,
+//! categories, MIME associations and startup notification are all skipped -- they matter to a
+//! menu, and the desktop is not one. What is here is what it takes to double-click a launcher
+//! and have the right process start.
+//!
+//! **`Exec=` is a shell-*like* string but is not shell.** The spec defines its own quoting, and
+//! handing the line to `sh -c` instead would let a `.desktop` file run anything a shell can --
+//! substitutions, redirection, chained commands -- none of which the format is supposed to
+//! allow. So it is split here, and the pieces are passed to `execvp` as-is.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// What kind of thing an entry describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryType {
+    /// Something to run: `Exec` says what.
+    Application,
+    /// Something to open: `URL` says what.
+    Link,
+    /// A directory. Carries no action of its own.
+    Directory,
+}
+
+/// A parsed `[Desktop Entry]` group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopEntry {
+    pub entry_type: EntryType,
+    /// The un-localized `Name`, used for the `%c` field code.
+    pub name: Option<String>,
+    pub exec: Option<String>,
+    /// A binary that must exist for the entry to be usable.
+    pub try_exec: Option<String>,
+    /// The working directory to run in.
+    pub path: Option<PathBuf>,
+    /// Whether the program wants a terminal around it.
+    pub terminal: bool,
+    /// `Type=Link`'s target.
+    pub url: Option<String>,
+    /// The entry is "deleted"; the spec says to act as though it were not there.
+    pub hidden: bool,
+}
+
+impl DesktopEntry {
+    /// Parse the `[Desktop Entry]` group out of a `.desktop` file's text.
+    ///
+    /// `None` if there is no such group, or it has no usable `Type`. Anything else malformed is
+    /// skipped rather than fatal: a stray line in a file someone hand-edited should not stop
+    /// the entry working.
+    pub fn parse(text: &str) -> Option<Self> {
+        let fields = group(text, "Desktop Entry")?;
+
+        let entry_type = match fields.get("Type").map(String::as_str) {
+            Some("Application") => EntryType::Application,
+            Some("Link") => EntryType::Link,
+            Some("Directory") => EntryType::Directory,
+            // The spec makes Type required, and without it there is nothing to do.
+            _ => return None,
+        };
+
+        Some(Self {
+            entry_type,
+            name: fields.get("Name").cloned(),
+            exec: fields.get("Exec").cloned(),
+            try_exec: fields.get("TryExec").cloned(),
+            path: fields
+                .get("Path")
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from),
+            terminal: fields.get("Terminal").map(String::as_str) == Some("true"),
+            url: fields.get("URL").cloned(),
+            hidden: fields.get("Hidden").map(String::as_str) == Some("true"),
+        })
+    }
+
+    /// Read and parse a file.
+    pub fn from_path(path: &Path) -> Option<Self> {
+        Self::parse(&std::fs::read_to_string(path).ok()?)
+    }
+
+    /// The argument vector to run, or an explanation of why there is none.
+    ///
+    /// `path` is the `.desktop` file itself, for the `%k` field code.
+    pub fn argv(&self, path: &Path) -> Result<Vec<String>, String> {
+        if self.hidden {
+            return Err("the entry is marked Hidden".to_string());
+        }
+        if self.entry_type != EntryType::Application {
+            return Err(format!("{:?} entries have nothing to run", self.entry_type));
+        }
+        let exec = self
+            .exec
+            .as_deref()
+            .filter(|exec| !exec.trim().is_empty())
+            .ok_or_else(|| "the entry has no Exec line".to_string())?;
+
+        // `TryExec` is the entry's own statement that it needs this binary. Checking it turns
+        // "nothing happened" into a line saying what is missing.
+        if let Some(try_exec) = self.try_exec.as_deref().filter(|t| !t.is_empty())
+            && !on_path(try_exec)
+        {
+            return Err(format!("TryExec {try_exec:?} is not installed"));
+        }
+
+        let argv = expand(&split(exec)?, self.name.as_deref(), path);
+        if argv.is_empty() {
+            return Err("the Exec line expands to nothing".to_string());
+        }
+        Ok(argv)
+    }
+}
+
+/// Whether a `TryExec` value names something runnable.
+///
+/// An absolute path is checked directly; a bare name is looked for on `PATH`, as the spec says.
+fn on_path(program: &str) -> bool {
+    let candidate = Path::new(program);
+    if candidate.is_absolute() {
+        return candidate.is_file();
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+}
+
+/// Pull one group's key/value pairs out of a desktop file.
+///
+/// Later duplicate keys lose, as `desktop-file-validate` would have rejected them anyway and
+/// the first is the more likely intent.
+fn group(text: &str, wanted: &str) -> Option<HashMap<String, String>> {
+    let mut fields = HashMap::new();
+    let mut inside = false;
+
+    for line in text.lines() {
+        let line = line.trim();
+        // Blank lines and comments carry nothing.
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(header) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            if inside {
+                // The next group starts; the one we wanted is finished.
+                break;
+            }
+            inside = header == wanted;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        // Localised keys (`Name[ja]`) are skipped: nothing here displays a name, and taking
+        // one would mean picking a locale, which is a job for whatever does.
+        let key = key.trim();
+        if key.contains('[') {
+            continue;
+        }
+        fields
+            .entry(key.to_owned())
+            .or_insert_with(|| unescape(value.trim()));
+    }
+
+    inside.then_some(fields)
+}
+
+/// Undo the escape sequences the spec defines for string values.
+fn unescape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            out.push(character);
+            continue;
+        }
+        match chars.next() {
+            Some('s') => out.push(' '),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            // Not a sequence the spec defines: keep both characters rather than eating one.
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// Split an `Exec=` value into arguments, by the spec's quoting rules.
+///
+/// Double quotes group; inside them a backslash escapes `"`, `` ` ``, `$` and `\`, and nothing
+/// else. Single quotes are *not* quoting characters here -- the spec reserves them but gives
+/// them no meaning -- so they are ordinary text, which is a real difference from a shell.
+fn split(exec: &str) -> Result<Vec<String>, String> {
+    let mut argv = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut quoted = false;
+    let mut chars = exec.chars().peekable();
+
+    while let Some(character) = chars.next() {
+        match character {
+            '"' => {
+                quoted = !quoted;
+                // An empty pair of quotes is still an argument.
+                started = true;
+            }
+            '\\' if quoted => match chars.next() {
+                Some(escaped @ ('"' | '`' | '$' | '\\')) => {
+                    current.push(escaped);
+                    started = true;
+                }
+                // Any other backslash inside quotes is literal.
+                Some(other) => {
+                    current.push('\\');
+                    current.push(other);
+                    started = true;
+                }
+                None => return Err("Exec ends in a backslash".to_string()),
+            },
+            ' ' | '\t' if !quoted => {
+                if started {
+                    argv.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            other => {
+                current.push(other);
+                started = true;
+            }
+        }
+    }
+
+    if quoted {
+        return Err("Exec has an unclosed quote".to_string());
+    }
+    if started {
+        argv.push(current);
+    }
+    Ok(argv)
+}
+
+/// Replace the spec's field codes.
+///
+/// The desktop launches an entry with no files, so `%f`/`%F`/`%u`/`%U` expand to nothing and
+/// the argument holding them disappears. `%i` is dropped as well -- it expands to
+/// `--icon <Icon>`, and nothing here has an icon to pass. The deprecated codes
+/// (`%d %D %n %N %v %m`) are removed, as the spec requires.
+fn expand(argv: &[String], name: Option<&str>, path: &Path) -> Vec<String> {
+    let mut out = Vec::with_capacity(argv.len());
+
+    for argument in argv {
+        // A field code is only a field code on its own; `%%` is a literal percent anywhere.
+        let mut expanded = String::with_capacity(argument.len());
+        let mut dropped = false;
+        let mut chars = argument.chars().peekable();
+
+        while let Some(character) = chars.next() {
+            if character != '%' {
+                expanded.push(character);
+                continue;
+            }
+            match chars.next() {
+                Some('%') => expanded.push('%'),
+                // No files or URLs are ever passed, so these leave nothing behind.
+                Some('f' | 'F' | 'u' | 'U' | 'i' | 'd' | 'D' | 'n' | 'N' | 'v' | 'm') => {
+                    dropped = true;
+                }
+                Some('c') => expanded.push_str(name.unwrap_or_default()),
+                Some('k') => expanded.push_str(&path.to_string_lossy()),
+                // An unknown code is not ours to interpret; leave it be.
+                Some(other) => {
+                    expanded.push('%');
+                    expanded.push(other);
+                }
+                None => expanded.push('%'),
+            }
+        }
+
+        // An argument that was *only* a field code vanishes; one that merely contained one
+        // keeps whatever was around it.
+        if dropped && expanded.is_empty() {
+            continue;
+        }
+        out.push(expanded);
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path() -> PathBuf {
+        PathBuf::from("/desktop/thing.desktop")
+    }
+
+    #[test]
+    fn a_plain_launcher_parses() {
+        let entry = DesktopEntry::parse(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Alacritty\n\
+             TryExec=alacritty\n\
+             Exec=alacritty\n\
+             Terminal=false\n",
+        )
+        .expect("should parse");
+        assert_eq!(entry.entry_type, EntryType::Application);
+        assert_eq!(entry.name.as_deref(), Some("Alacritty"));
+        assert_eq!(entry.exec.as_deref(), Some("alacritty"));
+        assert!(!entry.terminal);
+    }
+
+    #[test]
+    fn only_the_desktop_entry_group_is_read() {
+        // A real launcher carries `[Desktop Action …]` groups with their own Exec lines;
+        // taking one of those would run the wrong thing.
+        let entry = DesktopEntry::parse(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Exec=alacritty\n\
+             \n\
+             [Desktop Action New]\n\
+             Name=New Terminal\n\
+             Exec=should-not-win\n",
+        )
+        .expect("should parse");
+        assert_eq!(entry.exec.as_deref(), Some("alacritty"));
+    }
+
+    #[test]
+    fn a_file_with_no_desktop_entry_group_is_refused() {
+        assert!(DesktopEntry::parse("[Desktop Action New]\nExec=nope\n").is_none());
+    }
+
+    #[test]
+    fn an_entry_without_a_type_is_refused() {
+        assert!(DesktopEntry::parse("[Desktop Entry]\nExec=nope\n").is_none());
+    }
+
+    #[test]
+    fn comments_and_blank_lines_are_skipped() {
+        let entry = DesktopEntry::parse(
+            "# a comment\n\
+             \n\
+             [Desktop Entry]\n\
+             # another\n\
+             Type=Application\n\
+             Exec=thing\n",
+        )
+        .expect("should parse");
+        assert_eq!(entry.exec.as_deref(), Some("thing"));
+    }
+
+    #[test]
+    fn localised_keys_do_not_shadow_the_plain_one() {
+        let entry = DesktopEntry::parse(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Files\n\
+             Name[ja]=ファイル\n\
+             Exec=files\n",
+        )
+        .expect("should parse");
+        assert_eq!(entry.name.as_deref(), Some("Files"));
+    }
+
+    #[test]
+    fn value_escapes_are_undone() {
+        let entry =
+            DesktopEntry::parse("[Desktop Entry]\nType=Application\nName=a\\sb\\nc\\\\d\nExec=x\n")
+                .expect("should parse");
+        assert_eq!(entry.name.as_deref(), Some("a b\nc\\d"));
+    }
+
+    #[test]
+    fn spaces_around_the_equals_are_ignored() {
+        let entry =
+            DesktopEntry::parse("[Desktop Entry]\nType = Application\nExec = thing\n").expect("ok");
+        assert_eq!(entry.exec.as_deref(), Some("thing"));
+    }
+
+    // --- Exec splitting -------------------------------------------------------------
+
+    fn args(exec: &str) -> Vec<String> {
+        split(exec).expect("should split")
+    }
+
+    #[test]
+    fn arguments_split_on_whitespace() {
+        assert_eq!(args("prog -a -b"), ["prog", "-a", "-b"]);
+        assert_eq!(args("  prog   -a  "), ["prog", "-a"]);
+    }
+
+    #[test]
+    fn double_quotes_group() {
+        assert_eq!(
+            args(r#"prog "one argument" two"#),
+            ["prog", "one argument", "two"]
+        );
+    }
+
+    #[test]
+    fn an_empty_quoted_string_is_still_an_argument() {
+        assert_eq!(args(r#"prog "" x"#), ["prog", "", "x"]);
+    }
+
+    #[test]
+    fn the_spec_escapes_work_inside_quotes() {
+        assert_eq!(args(r#""a\"b""#), [r#"a"b"#]);
+        assert_eq!(args(r#""a\$b""#), ["a$b"]);
+        assert_eq!(args(r#""a\\b""#), [r"a\b"]);
+        assert_eq!(args("\"a\\`b\""), ["a`b"]);
+    }
+
+    #[test]
+    fn single_quotes_are_ordinary_text() {
+        // A real difference from a shell, and the spec's own rule.
+        assert_eq!(args("prog it's"), ["prog", "it's"]);
+    }
+
+    #[test]
+    fn an_unclosed_quote_is_an_error() {
+        assert!(split(r#"prog "unterminated"#).is_err());
+        assert!(split(r#""ends in a backslash \"#).is_err());
+    }
+
+    // --- field codes ----------------------------------------------------------------
+
+    fn argv_of(exec: &str) -> Vec<String> {
+        let entry = DesktopEntry::parse(&format!(
+            "[Desktop Entry]\nType=Application\nName=Thing\nExec={exec}\n"
+        ))
+        .expect("should parse");
+        entry.argv(&path()).expect("should build an argv")
+    }
+
+    #[test]
+    fn file_and_url_codes_expand_to_nothing() {
+        // The desktop launches with no arguments, so these must disappear entirely rather
+        // than being passed through as a literal "%F".
+        for code in ["%f", "%F", "%u", "%U"] {
+            assert_eq!(argv_of(&format!("prog {code}")), ["prog"], "{code}");
+        }
+    }
+
+    #[test]
+    fn deprecated_codes_are_removed() {
+        for code in ["%d", "%D", "%n", "%N", "%v", "%m", "%i"] {
+            assert_eq!(argv_of(&format!("prog {code}")), ["prog"], "{code}");
+        }
+    }
+
+    #[test]
+    fn a_doubled_percent_is_a_literal_one() {
+        assert_eq!(argv_of("prog 100%%"), ["prog", "100%"]);
+    }
+
+    #[test]
+    fn name_and_path_codes_expand() {
+        assert_eq!(argv_of("prog %c"), ["prog", "Thing"]);
+        assert_eq!(argv_of("prog %k"), ["prog", "/desktop/thing.desktop"]);
+    }
+
+    #[test]
+    fn a_code_inside_a_bigger_argument_keeps_its_surroundings() {
+        assert_eq!(argv_of("prog --file=%f"), ["prog", "--file="]);
+    }
+
+    #[test]
+    fn an_unknown_code_is_left_alone() {
+        assert_eq!(argv_of("prog %z"), ["prog", "%z"]);
+    }
+
+    // --- what refuses to launch -----------------------------------------------------
+
+    fn refusal(text: &str) -> String {
+        DesktopEntry::parse(text)
+            .expect("should parse")
+            .argv(&path())
+            .expect_err("should refuse")
+    }
+
+    #[test]
+    fn a_hidden_entry_does_not_run() {
+        let why = refusal("[Desktop Entry]\nType=Application\nExec=x\nHidden=true\n");
+        assert!(why.contains("Hidden"), "{why}");
+    }
+
+    #[test]
+    fn a_link_or_directory_has_nothing_to_run() {
+        // Both are legitimate entries; they are just not something `argv` can answer for.
+        let why = refusal("[Desktop Entry]\nType=Link\nURL=https://example.invalid\n");
+        assert!(why.contains("Link"), "{why}");
+        let why = refusal("[Desktop Entry]\nType=Directory\n");
+        assert!(why.contains("Directory"), "{why}");
+    }
+
+    #[test]
+    fn a_missing_or_empty_exec_is_refused() {
+        let why = refusal("[Desktop Entry]\nType=Application\n");
+        assert!(why.contains("Exec"), "{why}");
+        let why = refusal("[Desktop Entry]\nType=Application\nExec=   \n");
+        assert!(why.contains("Exec"), "{why}");
+    }
+
+    #[test]
+    fn an_uninstalled_try_exec_is_refused_by_name() {
+        let why = refusal(
+            "[Desktop Entry]\nType=Application\nTryExec=/nonexistent/binary\nExec=something\n",
+        );
+        assert!(why.contains("/nonexistent/binary"), "{why}");
+    }
+
+    #[test]
+    fn a_link_entry_still_carries_its_url() {
+        let entry = DesktopEntry::parse(
+            "[Desktop Entry]\nType=Link\nName=Site\nURL=https://example.invalid/x\n",
+        )
+        .expect("should parse");
+        assert_eq!(entry.url.as_deref(), Some("https://example.invalid/x"));
+    }
+
+    #[test]
+    fn exec_is_not_run_through_a_shell() {
+        // The whole reason for splitting here: a `.desktop` file must not be able to reach
+        // shell features. These stay inert text in the argv.
+        let argv = argv_of("prog $HOME");
+        assert_eq!(argv, ["prog", "$HOME"], "no variable expansion");
+        let argv = argv_of("prog a;b");
+        assert_eq!(argv, ["prog", "a;b"], "no command separation");
+        let argv = argv_of("prog *");
+        assert_eq!(argv, ["prog", "*"], "no globbing");
+    }
+}

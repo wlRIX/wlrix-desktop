@@ -40,6 +40,15 @@ pub struct Config {
     /// Absent means "work it out" -- see [`crate::ui`].
     #[serde(default)]
     pub output: Option<String>,
+    /// What opens a file or a URL, as a command and its leading arguments; the target is
+    /// appended. Empty means the default, `xdg-open`, which consults the user's MIME
+    /// associations.
+    #[serde(default)]
+    pub open: Vec<String>,
+    /// What wraps a `Terminal=true` launcher, as a command and its leading arguments; the
+    /// program is appended. Empty means work it out -- see [`crate::open::terminal_argv`].
+    #[serde(default)]
+    pub terminal: Vec<String>,
     #[serde(default)]
     pub metrics: MetricsConfig,
 }
@@ -76,6 +85,19 @@ impl MetricsConfig {
 }
 
 impl Config {
+    /// The opener command, falling back to `xdg-open`.
+    pub fn open_command(&self) -> Vec<String> {
+        if self.open.is_empty() {
+            return vec!["xdg-open".to_owned()];
+        }
+        self.open.clone()
+    }
+
+    /// The configured terminal wrapper, if there is one. `None` means "work it out".
+    pub fn terminal_command(&self) -> Option<Vec<String>> {
+        (!self.terminal.is_empty()).then(|| self.terminal.clone())
+    }
+
     /// Load the first config file that exists. No file at all is not an error -- the
     /// defaults are a working desktop.
     pub fn load() -> Self {

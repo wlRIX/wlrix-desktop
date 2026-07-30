@@ -244,6 +244,7 @@ mod tests {
         selection.press(
             &placed,
             Point::new(placed[0].rect.x + 4, placed[0].rect.y + 4),
+            0,
         );
         assert_eq!(tint_for(&selection, "a"), Tint::Selected);
     }
@@ -408,7 +409,7 @@ mod tests {
         let placed = placed(&["a.txt"]);
         let mut selection = Selection::default();
         let start = Point::new(placed[0].rect.x + 8, placed[0].rect.y + 8);
-        selection.press(&placed, start);
+        selection.press(&placed, start, 0);
         selection.motion(Point::new(start.x - 300, start.y + 200));
 
         let mut pixels = vec![0u8; 1280 * 800 * 4];

@@ -62,6 +62,8 @@ setting changed at runtime outlives a restart while a hand-set cell size stays h
 ```toml
 snap_to_grid = false    # icons drop where released; true aligns them to cells
 output = "DP-1"         # which monitor gets the icons; default is the leftmost
+open = ["xdg-open"]     # what opens a file or URL; the target is appended
+terminal = []           # what wraps a Terminal=true launcher; empty means work it out
 
 [metrics]
 icon = 64               # the icon artwork, square
