@@ -1,0 +1,28 @@
+[package]
+name = "wlrix-desktop"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "wlRIX desktop icons — the Indigo Magic desktop for the files in your XDG desktop directory."
+repository = "https://github.com/wlrix/wlrix-desktop"
+publish = false
+
+[dependencies]
+# The Wayland client. `wlrix-desktop` is a wlr-layer-shell **background** surface, drawn into
+# a plain shm buffer -- the same shape as wlrix-greeter, whose `ui` module this follows.
+smithay-client-toolkit = "0.19"
+wayland-client = "0.31"
+# The event loop. Wayland events, the inotify watch on the desktop directory, and the
+# deferred state save are all sources on one loop.
+calloop = "0.13"
+# Icon labels: shaping plus system-font fallback, so a CJK or RTL filename renders. Same
+# version the greeter and the compositor use, for one font stack across wlRIX.
+cosmic-text = "0.12"
+# `fs::inotify` for watching the desktop directory. Already in the dependency tree via
+# calloop and smithay-client-toolkit, so this costs nothing new.
+rustix = { version = "1", features = ["fs"] }
+# The config file and the machine-written icon-position state. TOML is wlRIX's config
+# format throughout.
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+libc = "0.2"
