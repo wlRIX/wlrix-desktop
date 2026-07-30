@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! What is on the desktop: one entry per file, and enough about each to pick an icon.
 //!
-//! Deliberately shallow. There is no MIME sniffing and no `.desktop` parsing -- the kind of a
-//! file is decided from its metadata and its extension, which is all the four drawn icons need
-//! to tell apart. Reading file contents to choose a picture would mean stat-ing and opening
-//! everything on the desktop on every rescan, for a distinction the user cannot see.
+//! Deliberately shallow for ordinary files: there is no MIME sniffing, and the kind of a file
+//! comes from its metadata and its extension, which is all the drawn-in-code icons need to tell
+//! apart. Reading file contents to choose a picture would mean opening everything on the
+//! desktop on every rescan, for a distinction the user cannot see.
+//!
+//! A `.desktop` file is the exception, because it *does* say what it should look like. Those
+//! are parsed here, once per rescan, into a [`Launcher`] -- the icon to draw, the icon to draw
+//! while running, and the app ids to match a window against.
 
 use std::path::{Path, PathBuf};
+
+use crate::desktop_entry::{DesktopEntry, EntryType};
 
 /// Which icon an entry gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +27,23 @@ pub enum Kind {
     Plain,
 }
 
+/// What a `.desktop` launcher says that the desktop needs in order to draw it.
+///
+/// Parsed once per rescan rather than per frame -- re-reading every desktop file to paint a
+/// hover would be absurd -- and refreshed whenever the directory changes, so editing a
+/// launcher or `chmod +x`-ing it takes effect without a restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launcher {
+    /// Only `Type=Application` entries stand on a magic carpet; a `Link` has no running state.
+    pub is_application: bool,
+    /// `Icon=`: the symbol to draw.
+    pub icon: Option<String>,
+    /// `X-WLRIX-Running-Icon=`: the symbol to draw instead while it is running.
+    pub running_icon: Option<String>,
+    /// The app ids its windows might use; see [`crate::running`].
+    pub identities: Vec<String>,
+}
+
 /// One file on the desktop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -29,6 +52,9 @@ pub struct Entry {
     /// moving the desktop directory keeps every icon where the user left it.
     pub name: String,
     pub kind: Kind,
+    /// Set for a `.desktop` file that parses. `None` for everything else, and for a launcher
+    /// too broken to read.
+    pub launcher: Option<Launcher>,
 }
 
 impl Entry {
@@ -61,10 +87,23 @@ impl Entry {
             Kind::Plain
         };
 
+        // Read once here rather than per frame; the watch re-runs this whenever the file
+        // changes, so an edited or newly-executable launcher updates on its own.
+        let launcher = (kind == Kind::Launcher)
+            .then(|| DesktopEntry::from_path(path))
+            .flatten()
+            .map(|desktop| Launcher {
+                is_application: desktop.entry_type == EntryType::Application,
+                identities: crate::running::identities(&desktop, path),
+                icon: desktop.icon,
+                running_icon: desktop.running_icon,
+            });
+
         Some(Self {
             path: path.to_path_buf(),
             name,
             kind,
+            launcher,
         })
     }
 }

@@ -321,6 +321,7 @@ mod tests {
             path: format!("/desktop/{name}").into(),
             name: name.to_owned(),
             kind: Kind::Plain,
+            launcher: None,
         }
     }
 

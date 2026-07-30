@@ -50,16 +50,22 @@ use smithay_client_toolkit::{
     shm::{Shm, ShmHandler, slot::SlotPool},
 };
 use wayland_client::{
-    Connection, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{
         wl_output::WlOutput, wl_pointer::WlPointer, wl_seat::WlSeat, wl_shm, wl_surface::WlSurface,
     },
 };
+use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
+    ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1},
+    ext_foreign_toplevel_list_v1::{self, ExtForeignToplevelListV1},
+};
 
 use crate::config::Config;
 use crate::entries::Entry;
+use crate::image::Images;
 use crate::layout::{Grid, Metrics, Placed, Point, Rect};
+use crate::running::Running;
 use crate::select::Selection;
 use crate::state::State;
 use crate::theme::font::Fonts;
@@ -94,6 +100,11 @@ pub struct Desktop {
     metrics: Metrics,
     saved: State,
     snap_to_grid: bool,
+
+    /// Decoded icon artwork, cached across frames.
+    images: Images,
+    /// Which applications have a window open, for the magic carpet's state.
+    running: Running,
 
     entries: Vec<Entry>,
     placed: Vec<Placed>,
@@ -177,6 +188,8 @@ pub fn run() -> Result<(), String> {
         metrics,
         saved,
         snap_to_grid,
+        images: Images::default(),
+        running: Running::default(),
         entries: Vec::new(),
         placed: Vec::new(),
         selection: Selection::default(),
@@ -184,6 +197,22 @@ pub fn run() -> Result<(), String> {
         dirty: true,
         exit: false,
     };
+
+    // The window list, for the magic carpet's running state. Optional: a compositor without it
+    // still gets a working desktop, with every carpet closed.
+    match desktop
+        .registry_state
+        .bind_one::<ExtForeignToplevelListV1, _, _>(&qh, 1..=1, ())
+    {
+        Ok(_list) => {
+            // Nothing to hold: the compositor pushes toplevels at us, and the handles arrive
+            // as children of the list object.
+        }
+        Err(err) => eprintln!(
+            "wlrix-desktop: no ext-foreign-toplevel-list ({err}); \
+             application icons will always show as not running"
+        ),
+    }
 
     WaylandSource::new(conn, event_queue)
         .insert(loop_handle.clone())
@@ -414,10 +443,14 @@ impl Desktop {
         let mut canvas = canvas::Canvas::new(pixels, width as i32, height as i32);
         paint::desktop(
             &mut canvas,
-            &mut self.fonts,
-            &self.placed,
-            &self.selection,
-            self.metrics.icon,
+            &mut paint::Frame {
+                fonts: &mut self.fonts,
+                images: &mut self.images,
+                placed: &self.placed,
+                selection: &self.selection,
+                running: &self.running,
+                icon_size: self.metrics.icon,
+            },
         );
 
         let surface = layer.wl_surface();
@@ -427,6 +460,61 @@ impl Desktop {
             return;
         }
         surface.commit();
+    }
+}
+
+// --- ext-foreign-toplevel-list-v1 -------------------------------------------------------
+//
+// Not something smithay-client-toolkit wraps, so the two `Dispatch` impls are written out.
+// The desktop only reads this list: it wants app ids, to decide which launchers have a window
+// open and so which magic carpets stand open.
+
+impl Dispatch<ExtForeignToplevelListV1, ()> for Desktop {
+    fn event(
+        desktop: &mut Self,
+        _list: &ExtForeignToplevelListV1,
+        event: ext_foreign_toplevel_list_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let ext_foreign_toplevel_list_v1::Event::Finished = event {
+            // The compositor has stopped listing windows. Nothing is known to be running any
+            // more, so every carpet closes rather than freezing as it was.
+            desktop.running = Running::default();
+            desktop.dirty = true;
+        }
+    }
+
+    // The `toplevel` event carries a new object the compositor created for us.
+    wayland_client::event_created_child!(Desktop, ExtForeignToplevelListV1, [
+        ext_foreign_toplevel_list_v1::EVT_TOPLEVEL_OPCODE => (ExtForeignToplevelHandleV1, ()),
+    ]);
+}
+
+impl Dispatch<ExtForeignToplevelHandleV1, ()> for Desktop {
+    fn event(
+        desktop: &mut Self,
+        handle: &ExtForeignToplevelHandleV1,
+        event: ext_foreign_toplevel_handle_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // The protocol object's own id, which is unique per window for as long as it exists.
+        let id = handle.id().protocol_id();
+        match event {
+            ext_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
+                desktop.running.window(id, &app_id);
+                desktop.dirty = true;
+            }
+            ext_foreign_toplevel_handle_v1::Event::Closed => {
+                desktop.running.closed(id);
+                desktop.dirty = true;
+                handle.destroy();
+            }
+            _ => {}
+        }
     }
 }
 

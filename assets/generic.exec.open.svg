@@ -1,0 +1,13 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 20000303 Stylable//EN"
+	"http://www.w3.org/TR/2000/03/WD-SVG-20000303/DTD/svg-20000303-stylable.dtd">
+<svg width="50pt" height="50pt" viewBox="0 0 50 50" xml:space="preserve">
+<g transform="scale(0.5)">
+	<g id="Icon Shadow - Open" style="fill-rule:nonzero;clip-rule:nonzero;fill:#000000;stroke:none;stroke-miterlimit:4;fill-opacity:75%;">
+		<path d="M18.00 84L10.00 80L50.00 60L58.00 64z"/>
+	</g>
+	<g id="Icon - Open" style="fill-rule:none;clip-rule:nonzero;fill:#FFFFFF;stroke:#000000;stroke-miterlimit:4;fill-opacity:100%;">
+		<path d="M18.00 74L15.84 72.72L14.00 71L12.10 68.73L10.90 66.8L10.00 64L10.00 60L10.00 20L50.00 0L50.00 40L50.00 44L50.88 47.16L52.04 49.3L53.48 50.86L55.00 52L58.00 54z"/>
+	</g>
+</g>
+</svg>

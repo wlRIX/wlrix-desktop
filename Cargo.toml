@@ -26,3 +26,19 @@ rustix = { version = "1", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 libc = "0.2"
+# Rasterizing icons. The magic carpet is SVG, and so is most of what a modern icon theme
+# ships -- `Icon=Alacritty` resolves to `/usr/share/pixmaps/Alacritty.svg` on this machine.
+# `raster-images` is off: PNG is decoded directly (below), and the rest of that feature is
+# GIF/JPEG/WebP support for `<image>` elements, which an icon has no business containing.
+resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts"] }
+# Resolving an `Icon=` name to a file: index.theme parsing, theme inheritance, size and scale
+# directories, and the `/usr/share/pixmaps` fallback. All of that is the icon-theme spec, and
+# reimplementing it to get the awkward cases wrong would be a poor trade.
+freedesktop-icons = "0.4.0"
+# Themes still ship plenty of PNG. Decoding it directly rather than through `image` keeps the
+# dependency to the one format that actually turns up.
+png = "0.18"
+# `ext-foreign-toplevel-list-v1`, for knowing which applications have a window open -- which is
+# what decides whether a launcher's magic carpet is drawn open or closed. The compositor
+# advertises it; smithay-client-toolkit does not wrap it, so the bindings come from here.
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }

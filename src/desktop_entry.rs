@@ -20,6 +20,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// wlRIX's own key for the icon to show while an application is running.
+///
+/// The Desktop Entry spec reserves the `X-` prefix for exactly this, so a file carrying it is
+/// still a valid desktop entry to everything that does not know what it means.
+pub const RUNNING_ICON_KEY: &str = "X-WLRIX-Running-Icon";
+
 /// What kind of thing an entry describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryType {
@@ -48,6 +54,19 @@ pub struct DesktopEntry {
     pub url: Option<String>,
     /// The entry is "deleted"; the spec says to act as though it were not there.
     pub hidden: bool,
+    /// The icon to draw: a theme name or an absolute path.
+    pub icon: Option<String>,
+    /// **A wlRIX extension**, not in the spec: the icon to draw *while the application is
+    /// running*, in place of [`icon`](Self::icon).
+    ///
+    /// IRIX let an application show a different symbol once it was up -- the magic carpet says
+    /// running or not, and this says what stands on it. The `X-` prefix is the spec's own
+    /// reservation for extensions, so a file carrying this stays valid everywhere else.
+    pub running_icon: Option<String>,
+    /// The window class the application will use, when it declares one. This is how a window
+    /// on screen is matched back to the launcher that would have started it; see
+    /// [`crate::running`].
+    pub startup_wm_class: Option<String>,
 }
 
 impl DesktopEntry {
@@ -79,6 +98,15 @@ impl DesktopEntry {
             terminal: fields.get("Terminal").map(String::as_str) == Some("true"),
             url: fields.get("URL").cloned(),
             hidden: fields.get("Hidden").map(String::as_str) == Some("true"),
+            icon: fields.get("Icon").filter(|icon| !icon.is_empty()).cloned(),
+            running_icon: fields
+                .get(RUNNING_ICON_KEY)
+                .filter(|icon| !icon.is_empty())
+                .cloned(),
+            startup_wm_class: fields
+                .get("StartupWMClass")
+                .filter(|class| !class.is_empty())
+                .cloned(),
         })
     }
 

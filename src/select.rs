@@ -261,6 +261,7 @@ mod tests {
                     path: format!("/desktop/{name}").into(),
                     name: (*name).to_owned(),
                     kind: Kind::Plain,
+                    launcher: None,
                 },
                 spot: Spot::Slot(index as i32),
                 rect: grid.slot_rect(index as i32),

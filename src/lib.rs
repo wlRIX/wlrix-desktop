@@ -7,8 +7,10 @@
 pub mod config;
 pub mod desktop_entry;
 pub mod entries;
+pub mod image;
 pub mod layout;
 pub mod open;
+pub mod running;
 pub mod select;
 pub mod state;
 pub mod theme;

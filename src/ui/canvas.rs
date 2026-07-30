@@ -147,6 +147,35 @@ impl<'a> Canvas<'a> {
         let b = over(sb, dst[3]);
         self.put(x, y, Rgb((a << 24) | (r << 16) | (g << 8) | b));
     }
+
+    /// Composite one already-premultiplied ARGB pixel over what is there.
+    ///
+    /// [`blend`](Self::blend) takes a straight color and a coverage, which suits a glyph or an
+    /// icon mask -- one color, varying alpha. A loaded image is neither: every pixel has its
+    /// own color *and* its own alpha, already multiplied together by the decoder. So the
+    /// source needs no scaling here, only the destination does.
+    pub fn blend_premultiplied(&mut self, x: i32, y: i32, pixel: u32) {
+        let source = pixel.to_be_bytes();
+        let alpha = u32::from(source[0]);
+        if alpha == 0 {
+            return;
+        }
+        if alpha == 255 {
+            // Opaque: nothing underneath survives, so skip the arithmetic.
+            self.put(x, y, Rgb(pixel));
+            return;
+        }
+        let inverse = 255 - alpha;
+        let dst = self.get(x, y).0.to_be_bytes();
+        let over = |src: u8, dst: u8| -> u32 {
+            (u32::from(src) * 255 + u32::from(dst) * inverse + 127) / 255
+        };
+        let a = over(source[0], dst[0]);
+        let r = over(source[1], dst[1]);
+        let g = over(source[2], dst[2]);
+        let b = over(source[3], dst[3]);
+        self.put(x, y, Rgb((a << 24) | (r << 16) | (g << 8) | b));
+    }
 }
 
 /// A rectangle in canvas pixels. Right/bottom are exclusive.

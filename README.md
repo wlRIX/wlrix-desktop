@@ -10,9 +10,48 @@ Icons fill from the **top right of the primary monitor, downward**, starting a n
 of room — the opposite corner and axis from the minimized-window tiles `wlrix-compositor` draws top-left, so the two
 grids grow away from each other.
 
-Each icon is drawn as a coverage mask and tinted by its state: knocked-back gray at rest, white under the pointer, and
-IRIX's lamp yellow when selected. Drawing the shape once and blending the tint through it means the three states cannot
-drift apart, and it is what makes real artwork a drop-in later — supply a mask instead of a drawing routine.
+Files and folders are drawn as coverage masks and tinted by state: knocked-back gray at rest, white under the pointer,
+and IRIX's lamp yellow when selected. Drawing the shape once and blending the tint through it means the three states
+cannot drift apart.
+
+## The magic carpet
+
+An application launcher is drawn as two layers, as IRIX's Indigo Magic desktop did: a **magic carpet** underneath saying
+whether the application is running — lying flat when it is not, stood upright when it is — with the application's own
+**symbol** standing on it. The symbol's placement is the same in both states, so starting an application rotates the
+carpet under a symbol that stays put.
+
+Only `Type=Application` entries get one; a file, a folder or a `Type=Link` bookmark has no running state to show.
+
+**The tint currently only goes on the carpet, not the symbol.** The carpet is wlRIX's own artwork, so gray/white/yellow
+is exactly the IRIX rule there, while an application's icon keeps the colors it was drawn in. The tint *multiplies*
+rather than replaces, so the carpet's black outline and shadow survive a yellow selection instead of flattening into a
+blob.
+
+`Icon=` is resolved through the XDG icon theme — index.theme, inheritance, size directories and the
+`/usr/share/pixmaps` fallback — and rasterized at whatever the configured icon size is, so an SVG stays crisp.
+
+### `X-WLRIX-Running-Icon`
+
+A wlRIX extension, not in the spec, using the `X-` prefix the spec reserves for exactly this — so a file carrying it
+remains a valid desktop entry everywhere else. It names an icon to show *instead of* `Icon=` while the application is
+running, which is a thing IRIX allowed:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=Showcase
+Exec=showcase
+Icon=showcase
+X-WLRIX-Running-Icon=showcase-running
+```
+
+### How "running" is decided
+
+Two sources, because neither alone is right. **Windows**, via `ext-foreign-toplevel-list-v1`, are the honest answer —
+they count what is actually on screen however it was started, and notice an application quitting. But they say nothing
+during the second or two before the first window maps, so a **process we launched** counts too. A window is matched to a
+launcher by `StartupWMClass`, then the desktop file's basename, then the `Exec` binary — case-insensitively.
 
 ## How it reaches the screen
 

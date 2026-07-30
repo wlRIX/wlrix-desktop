@@ -208,11 +208,14 @@ mod tests {
     }
 
     fn entry(path: &Path, kind: Kind) -> Entry {
-        Entry {
+        // Through the real classifier, so these carry whatever a scan would have carried --
+        // including the parsed launcher, which is what the drawing side reads.
+        Entry::at(path).unwrap_or(Entry {
             path: path.to_path_buf(),
             name: path.file_name().unwrap().to_string_lossy().into_owned(),
             kind,
-        }
+            launcher: None,
+        })
     }
 
     fn config(toml: &str) -> Config {
