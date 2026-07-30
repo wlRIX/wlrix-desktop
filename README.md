@@ -16,8 +16,12 @@ drift apart, and it is what makes real artwork a drop-in later — supply a mask
 
 ## How it reaches the screen
 
-A **wlr-layer-shell background surface**, anchored to all four edges. That is below every window and above nothing,
-which is where a desktop belongs.
+A **wlr-layer-shell surface on the `bottom` layer**, anchored to all four edges and painted with a **transparent**
+background. That puts it below every window but above the `background` layer, which is where the wallpaper lives
+(`swaybg` and friends) — so the wallpaper shows through wherever an icon is not drawn.
+
+Not `background`: two clients sharing a layer have no defined order between them, so a wallpaper restarted after the
+desktop would be composited over the icons.
 
 This is why `wlrix-compositor` had to learn to route input to layer surfaces: `wlrix-greeter`
 only ever put an *inert* backdrop on a layer, whereas here the background is the interactive part. The compositor
@@ -25,10 +29,14 @@ hit-tests overlay/top layers above windows and bottom/background below them, and
 when it is clicked and asked for `on-demand`
 interactivity. Without that, the icons could not be clicked at all.
 
-Two settings differ from the greeter's backdrop and are load-bearing:
+Three settings differ from the greeter's backdrop and are load-bearing:
 
+- `Layer::Bottom`, not `Background` — above the wallpaper, below the windows.
 - `exclusive_zone(0)`, not `-1` — shrink to avoid a panel's reserved space rather than covering it.
 - `KeyboardInteractivity::OnDemand`, so clicking the desktop takes focus off whatever window had it.
+
+The surface takes clicks across its whole area even where it is transparent, which is what makes clicking bare desktop
+deselect. A wallpaper below it never sees the pointer, which is correct — wallpapers are not interactive.
 
 ## Build and run
 

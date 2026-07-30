@@ -101,16 +101,51 @@ impl<'a> Canvas<'a> {
         self.fill_rect(Rect::new(rect.right() - 1, rect.y, 1, rect.h), colour);
     }
 
+    /// Erase the canvas to fully transparent.
+    ///
+    /// **This is what the desktop clears to**, not a color: the icons sit on a layer surface
+    /// with a wallpaper (`swaybg` and friends) on the layer below, so painting an opaque
+    /// background would hide it. Where nothing is drawn, the wallpaper -- or the compositor's
+    /// own desktop gray when there is none -- shows through.
+    pub fn clear_transparent(&mut self) {
+        self.pixels.fill(0);
+    }
+
     /// Blend `color` over one pixel by `coverage` (0 = leave alone, 255 = opaque).
     ///
-    /// This is the text path: a glyph is an 8-bit coverage bitmap, laid over whatever the
-    /// background already is.
+    /// This is the text and icon path: a glyph or an icon mask is an 8-bit coverage bitmap,
+    /// laid over whatever is already there.
+    ///
+    /// Source-over in **premultiplied** alpha, which is what `wl_shm`'s `Argb8888` wants and
+    /// what a partly transparent canvas needs -- an antialiased glyph edge over bare desktop
+    /// has to end up partly transparent, not blended against opaque black. On an already
+    /// opaque pixel this reduces to the plain interpolation it replaced, so nothing that was
+    /// drawn on a solid background changes.
+    ///
+    /// (This is where the desktop's copy of `canvas.rs` diverges from the greeter's, which
+    /// only ever paints an opaque dialog. See the note at the top of the file.)
     pub fn blend(&mut self, x: i32, y: i32, colour: Rgb, coverage: u8) {
         if coverage == 0 {
             return;
         }
-        let mixed = self.get(x, y).blend(colour, coverage);
-        self.put(x, y, mixed);
+        let (sr, sg, sb) = colour.channels();
+        let dst = self.get(x, y).0.to_be_bytes();
+        let alpha = u32::from(coverage);
+        let inverse = 255 - alpha;
+
+        // `(v * 255 + 127) / 255` rounds rather than truncating; truncating loses a level per
+        // composite, which shows as text going muddy where it overlaps.
+        let over = |src: u8, dst: u8| -> u32 {
+            let src = u32::from(src) * alpha;
+            let dst = u32::from(dst) * inverse;
+            (src + dst + 127) / 255
+        };
+
+        let a = over(255, dst[0]);
+        let r = over(sr, dst[1]);
+        let g = over(sg, dst[2]);
+        let b = over(sb, dst[3]);
+        self.put(x, y, Rgb((a << 24) | (r << 16) | (g << 8) | b));
     }
 }
 

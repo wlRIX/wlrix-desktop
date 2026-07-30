@@ -8,7 +8,6 @@
 use crate::layout::{Placed, Point};
 use crate::select::Selection;
 use crate::theme::font::{Face, Fonts, Run};
-use crate::theme::palette;
 use crate::ui::canvas::{Canvas, Rect};
 use crate::ui::icons::{self, Tint};
 
@@ -32,7 +31,10 @@ pub fn desktop(
     selection: &Selection,
     icon_size: i32,
 ) {
-    canvas.clear(palette::DESKTOP);
+    // Transparent, not the desktop gray: a wallpaper client sits on the layer below, and
+    // painting a background here would hide it. With no wallpaper the compositor's own clear
+    // color -- the same gray -- shows through, so the bare desktop looks unchanged.
+    canvas.clear_transparent();
 
     for item in placed {
         // A dragged icon is drawn under the pointer rather than in its cell, so it follows
@@ -199,6 +201,7 @@ mod tests {
     use super::*;
     use crate::entries::{Entry, Kind};
     use crate::layout::{Grid, Metrics, Rect as LayoutRect, Spot};
+    use crate::theme::Rgb;
 
     /// Font loading needs a system font database, which a build machine may not have. Every
     /// test here skips rather than fails in that case -- the drawing is verified on a real
@@ -334,19 +337,69 @@ mod tests {
         let placed = placed(&["a.txt", "b.txt"]);
         desktop(&mut canvas, &mut fonts, &placed, &Selection::default(), 64);
 
-        // Bottom-left is bare desktop.
-        assert_eq!(canvas.get(4, 796), palette::DESKTOP);
+        // Bottom-left is bare desktop, and bare desktop is *transparent* -- see below.
+        assert_eq!(canvas.get(4, 796), Rgb(0));
         // Something was drawn in the first cell.
         let cell = placed[0].rect;
-        let mut drawn = 0;
-        for y in cell.y..cell.y + cell.h {
-            for x in cell.x..cell.x + cell.w {
-                if canvas.get(x, y) != palette::DESKTOP {
-                    drawn += 1;
+        assert!(painted(&canvas, cell) > 0, "the first icon drew nothing");
+    }
+
+    #[test]
+    fn bare_desktop_is_left_transparent_so_a_wallpaper_shows_through() {
+        // The regression: this surface used to be cleared to an opaque gray, which hid
+        // whatever `swaybg` had put on the layer below. Everywhere an icon is not drawn must
+        // stay fully transparent.
+        let Some(mut fonts) = fonts() else { return };
+        let mut pixels = vec![0xffu8; 1280 * 800 * 4];
+        let mut canvas = Canvas::new(&mut pixels, 1280, 800);
+        let placed = placed(&["a.txt"]);
+        desktop(&mut canvas, &mut fonts, &placed, &Selection::default(), 64);
+
+        // Well away from the one icon, in all four corners of the surface.
+        for (x, y) in [(0, 0), (0, 799), (4, 400), (600, 796)] {
+            assert_eq!(
+                canvas.get(x, y),
+                Rgb(0),
+                "({x},{y}) should be transparent, not painted over the wallpaper"
+            );
+        }
+        // And the icon itself is still opaque where it is solid.
+        assert!(painted(&canvas, placed[0].rect) > 0);
+    }
+
+    #[test]
+    fn a_glyph_edge_over_bare_desktop_stays_partly_transparent() {
+        // Premultiplied source-over, not the old interpolation: an antialiased edge drawn on
+        // nothing must come out partly transparent, not blended against opaque black.
+        let mut pixels = vec![0u8; 4];
+        let mut canvas = Canvas::new(&mut pixels, 1, 1);
+        canvas.clear_transparent();
+        canvas.blend(0, 0, Rgb(0xff_ffffff), 128);
+
+        let pixel = canvas.get(0, 0).0;
+        let alpha = (pixel >> 24) as u8;
+        assert!(
+            (127..=129).contains(&alpha),
+            "half coverage should give about half alpha, got {alpha}"
+        );
+        // Premultiplied: no channel may exceed the alpha.
+        for shift in [16, 8, 0] {
+            let channel = ((pixel >> shift) & 0xff) as u8;
+            assert!(channel <= alpha, "channel {channel} exceeds alpha {alpha}");
+        }
+    }
+
+    /// How many pixels inside `rect` were painted at all.
+    fn painted(canvas: &Canvas, rect: LayoutRect) -> usize {
+        let mut count = 0;
+        for y in rect.y..rect.y + rect.h {
+            for x in rect.x..rect.x + rect.w {
+                if canvas.get(x, y) != Rgb(0) {
+                    count += 1;
                 }
             }
         }
-        assert!(drawn > 0, "the first icon drew nothing");
+        count
     }
 
     #[test]
@@ -363,17 +416,9 @@ mod tests {
         desktop(&mut canvas, &mut fonts, &placed, &selection, 64);
 
         // The cell it came from is now bare.
-        let cell = placed[0].rect;
-        let mut left_behind = 0;
-        for y in cell.y..cell.y + cell.h {
-            for x in cell.x..cell.x + cell.w {
-                if canvas.get(x, y) != palette::DESKTOP {
-                    left_behind += 1;
-                }
-            }
-        }
         assert_eq!(
-            left_behind, 0,
+            painted(&canvas, placed[0].rect),
+            0,
             "the icon should have moved, not been copied"
         );
     }
