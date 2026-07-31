@@ -71,6 +71,64 @@ pub fn open(entry: &Entry, config: &Config) -> Result<Child, String> {
     spawn(&plan.argv, plan.directory.as_deref())
 }
 
+/// Decide what running one of `entry`'s `[Desktop Action …]` groups would do.
+///
+/// The same rules as opening the launcher itself, and for the same reasons: the execute bit is
+/// still the consent -- an action is a command line out of the same file, so a launcher that
+/// may not be run may not be run sideways either -- and `Terminal=true` still needs a terminal
+/// wrapped around it. `TryExec` is checked too, since it is the entry's statement about the
+/// program all its actions are ways into.
+pub fn action_plan(entry: &Entry, id: &str, config: &Config) -> Result<Plan, String> {
+    let path = &entry.path;
+    let desktop = DesktopEntry::from_path(path)
+        .ok_or_else(|| format!("{} is not a valid desktop entry", path.display()))?;
+    let action = desktop
+        .action(id)
+        .ok_or_else(|| format!("{} has no {id:?} action", path.display()))?;
+
+    if !is_executable(path) {
+        return Err(format!(
+            "{} is not executable, so its {id:?} action will not be run; `chmod +x` it if you trust it",
+            path.display()
+        ));
+    }
+    if let Some(try_exec) = desktop.try_exec.as_deref().filter(|t| !t.is_empty())
+        && !on_path(try_exec)
+    {
+        return Err(format!(
+            "{}: TryExec {try_exec:?} is not installed",
+            path.display()
+        ));
+    }
+
+    let argv = action
+        .argv(desktop.name.as_deref(), path)
+        .map_err(|why| format!("{}: {why}", path.display()))?;
+    let argv = if desktop.terminal {
+        let mut terminal = terminal_argv(config).ok_or_else(|| {
+            format!(
+                "{} needs a terminal and none was found; set `terminal` in desktop.toml",
+                path.display()
+            )
+        })?;
+        terminal.extend(argv);
+        terminal
+    } else {
+        argv
+    };
+
+    Ok(Plan {
+        argv,
+        directory: desktop.path,
+    })
+}
+
+/// Run one of `entry`'s `[Desktop Action …]` groups.
+pub fn action(entry: &Entry, id: &str, config: &Config) -> Result<Child, String> {
+    let plan = action_plan(entry, id, config)?;
+    spawn(&plan.argv, plan.directory.as_deref())
+}
+
 /// What running a `.desktop` file amounts to.
 fn launcher_plan(path: &Path, config: &Config) -> Result<Plan, String> {
     let entry = DesktopEntry::from_path(path)
@@ -362,6 +420,145 @@ mod tests {
         let mut child = open(&entry(&path, Kind::Launcher), &opener).expect("should open");
         let _ = child.wait();
         assert!(marker.exists(), "the URL was not handed to the opener");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A launcher with one action that leaves a file behind when it runs.
+    fn with_action(dir: &Path, marker: &Path, executable: bool) -> PathBuf {
+        launcher_file(
+            dir,
+            "actions.desktop",
+            &format!(
+                "[Desktop Entry]\n\
+                 Type=Application\n\
+                 Name=Thing\n\
+                 Exec=/bin/true\n\
+                 Actions=Mark;\n\
+                 \n\
+                 [Desktop Action Mark]\n\
+                 Name=Mark\n\
+                 Exec=/usr/bin/touch {}\n",
+                marker.display()
+            ),
+            executable,
+        )
+    }
+
+    #[test]
+    fn an_action_runs_its_own_command() {
+        // Not the entry's `Exec`, which here is `/bin/true` and would leave nothing behind.
+        let dir = scratch("action");
+        let marker = dir.join("marked");
+        let path = with_action(&dir, &marker, true);
+
+        let mut child =
+            action(&entry(&path, Kind::Launcher), "Mark", &config("")).expect("should run");
+        let _ = child.wait();
+        assert!(marker.exists(), "the action's own Exec was not run");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_action_needs_the_execute_bit_too() {
+        // The same consent rule as opening the launcher. An action is a command line out of
+        // the same file, so a launcher that may not run must not run sideways either.
+        let dir = scratch("action-not-executable");
+        let marker = dir.join("marked");
+        let path = with_action(&dir, &marker, false);
+
+        let why =
+            action(&entry(&path, Kind::Launcher), "Mark", &config("")).expect_err("should refuse");
+        assert!(why.contains("not executable"), "{why}");
+        assert!(why.contains("chmod"), "should say how to allow it: {why}");
+        assert!(!marker.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unknown_action_is_refused_by_name() {
+        let dir = scratch("action-unknown");
+        let marker = dir.join("marked");
+        let path = with_action(&dir, &marker, true);
+
+        let why =
+            action(&entry(&path, Kind::Launcher), "Nope", &config("")).expect_err("should refuse");
+        assert!(why.contains("Nope"), "{why}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_actions_exec_is_not_run_through_a_shell_either() {
+        let dir = scratch("action-no-shell");
+        let victim = dir.join("should-not-exist");
+        let path = launcher_file(
+            &dir,
+            "shell.desktop",
+            &format!(
+                "[Desktop Entry]\n\
+                 Type=Application\n\
+                 Name=Shelly\n\
+                 Exec=/bin/true\n\
+                 Actions=Sneaky;\n\
+                 \n\
+                 [Desktop Action Sneaky]\n\
+                 Name=Sneaky\n\
+                 Exec=/bin/true > {}\n",
+                victim.display()
+            ),
+            true,
+        );
+
+        let mut child =
+            action(&entry(&path, Kind::Launcher), "Sneaky", &config("")).expect("should run");
+        let _ = child.wait();
+        assert!(!victim.exists(), "the action's Exec reached a shell");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_action_inherits_the_entrys_path_and_terminal() {
+        // Both are the entry's statement about the program, and an action is a way into that
+        // same program -- a terminal app stays a terminal app whichever door it is opened by.
+        let dir = scratch("action-terminal");
+        let marker = dir.join("wrapped");
+        let path = launcher_file(
+            &dir,
+            "term.desktop",
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Top\n\
+             Terminal=true\n\
+             Path=/tmp\n\
+             Exec=/bin/true\n\
+             Actions=Mark;\n\
+             \n\
+             [Desktop Action Mark]\n\
+             Name=Mark\n\
+             Exec=/bin/true --mark\n",
+            true,
+        );
+
+        let with_terminal = config(&format!(
+            "terminal = [\"/usr/bin/touch\", \"{}\"]",
+            marker.display()
+        ));
+        let plan = action_plan(&entry(&path, Kind::Launcher), "Mark", &with_terminal)
+            .expect("should plan");
+        assert_eq!(
+            plan.argv,
+            [
+                "/usr/bin/touch",
+                &marker.display().to_string(),
+                "/bin/true",
+                "--mark"
+            ]
+        );
+        assert_eq!(plan.directory.as_deref(), Some(Path::new("/tmp")));
 
         let _ = fs::remove_dir_all(&dir);
     }

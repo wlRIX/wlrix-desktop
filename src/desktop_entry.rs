@@ -7,10 +7,11 @@
 //!
 //! [spec]: https://specifications.freedesktop.org/desktop-entry-spec/latest/
 //!
-//! Deliberately not a general parser. Other groups (`[Desktop Action …]`), categories, MIME
-//! associations and startup notification are all skipped -- they matter to a menu, and the
-//! desktop is not one. What is here is what it takes to double-click a launcher and have the
-//! right process start, and to draw it with the right words underneath.
+//! Deliberately not a general parser. Categories, MIME associations and startup notification
+//! are all skipped -- they matter to an application menu, and the desktop is not one. What is
+//! here is what it takes to double-click a launcher and have the right process start, to draw
+//! it with the right words underneath, and to offer its `[Desktop Action …]` groups on the
+//! right-click menu.
 //!
 //! Keys the spec types as `localestring` -- `Name` and `Icon`, of the ones read here -- are
 //! resolved through [`crate::locale`] as they are parsed, so what comes out is already in the
@@ -26,6 +27,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::locale::Locale;
+
+/// One group's key/value pairs.
+type Fields = HashMap<String, String>;
+
+/// Look a `localestring` key up in a group, already resolved for the locale.
+type Localized<'a> = dyn Fn(&Fields, &str) -> Option<String> + 'a;
 
 /// wlRIX's own key for the icon to show while an application is running.
 ///
@@ -76,6 +83,29 @@ pub struct DesktopEntry {
     /// on screen is matched back to the launcher that would have started it; see
     /// [`crate::running`].
     pub startup_wm_class: Option<String>,
+    /// The entry's `[Desktop Action …]` groups, in the order they should be offered.
+    pub actions: Vec<DesktopAction>,
+}
+
+/// One `[Desktop Action …]` group: a second way into the same application.
+///
+/// Steam's launcher offers Store, Library, Friends and the rest this way; a browser offers a
+/// private window. They are the launcher's own menu, and the desktop shows them on the one it
+/// posts for a selected `.desktop` file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopAction {
+    /// The identifier from the group header, `Store` in `[Desktop Action Store]`.
+    ///
+    /// Kept because it, not a position in a list, is how an action is named later: the file is
+    /// re-read when the action is chosen, and by then it may have been edited.
+    pub id: String,
+    /// `Name`, in the user's language. Required by the spec, and there would be nothing to
+    /// label the row with without it.
+    pub name: String,
+    /// `Exec`. Required by the spec; an action with nothing to run is not one.
+    pub exec: String,
+    /// `Icon`, if the action gives its own. Not drawn yet -- the menu has no icon column.
+    pub icon: Option<String>,
 }
 
 impl DesktopEntry {
@@ -94,17 +124,22 @@ impl DesktopEntry {
 
     /// Parse against a given locale. See [`parse`](Self::parse).
     pub fn parse_in(text: &str, locale: &Locale) -> Option<Self> {
-        let fields = group(text, "Desktop Entry")?;
+        let all = groups(text);
+        let fields = all
+            .iter()
+            .find(|(name, _)| name == "Desktop Entry")
+            .map(|(_, fields)| fields)?;
 
         // The spec's fallback walk, for the keys it types as `localestring`. A file with no
         // translations at all lands on the plain key, which is the last candidate.
         //
         // An empty value does not count as a match: `Name[ja]=` is a broken translation, not a
         // request for a nameless icon, so the walk carries on to the next candidate.
-        let localized = |key: &str| {
+        let localized = |fields: &Fields, key: &str| {
             locale
                 .candidates(key)
                 .find_map(|candidate| fields.get(&candidate).filter(|value| !value.is_empty()))
+                .cloned()
         };
 
         let entry_type = match fields.get("Type").map(String::as_str) {
@@ -117,7 +152,7 @@ impl DesktopEntry {
 
         Some(Self {
             entry_type,
-            name: localized("Name").cloned(),
+            name: localized(fields, "Name"),
             exec: fields.get("Exec").cloned(),
             try_exec: fields.get("TryExec").cloned(),
             path: fields
@@ -127,7 +162,7 @@ impl DesktopEntry {
             terminal: fields.get("Terminal").map(String::as_str) == Some("true"),
             url: fields.get("URL").cloned(),
             hidden: fields.get("Hidden").map(String::as_str) == Some("true"),
-            icon: localized("Icon").cloned(),
+            icon: localized(fields, "Icon"),
             running_icon: fields
                 .get(RUNNING_ICON_KEY)
                 .filter(|icon| !icon.is_empty())
@@ -136,7 +171,17 @@ impl DesktopEntry {
                 .get("StartupWMClass")
                 .filter(|class| !class.is_empty())
                 .cloned(),
+            actions: actions(&all, fields.get("Actions").map(String::as_str), &localized),
         })
+    }
+
+    /// The action with this id, if the entry has one.
+    ///
+    /// By id rather than by position, because the two ends of choosing an action are separated
+    /// by a re-read of the file: the menu is built from one parse and the action runs from
+    /// another, and the file may have been edited in between.
+    pub fn action(&self, id: &str) -> Option<&DesktopAction> {
+        self.actions.iter().find(|action| action.id == id)
     }
 
     /// Read and parse a file.
@@ -176,6 +221,70 @@ impl DesktopEntry {
     }
 }
 
+impl DesktopAction {
+    /// The argument vector this action runs.
+    ///
+    /// `name` is the *application's* translated name, for `%c`: the spec defines that code as
+    /// the name of the application, and an action is still that application under another
+    /// door. `path` is the `.desktop` file, for `%k`.
+    pub fn argv(&self, name: Option<&str>, path: &Path) -> Result<Vec<String>, String> {
+        let argv = expand(&split(&self.exec)?, name, path);
+        if argv.is_empty() {
+            return Err(format!("action {:?} expands to nothing", self.id));
+        }
+        Ok(argv)
+    }
+}
+
+/// Read the `[Desktop Action …]` groups an entry offers, in the order to offer them.
+///
+/// `listed` is the `Actions=` key: a semicolon-separated list of identifiers, which the spec
+/// makes the authority on both *which* actions exist and what order they come in. When it is
+/// missing -- which a hand-written file easily is -- the groups are taken in file order
+/// instead. The spec would have them ignored entirely; showing them is more use than showing
+/// nothing, and the file is malformed either way.
+///
+/// An action missing `Name` or `Exec` is dropped: the spec requires both, and without them
+/// there is either no label to draw or nothing to run.
+fn actions(
+    all: &[(String, Fields)],
+    listed: Option<&str>,
+    localized: &Localized,
+) -> Vec<DesktopAction> {
+    let group_of = |id: &str| {
+        let wanted = format!("Desktop Action {id}");
+        all.iter()
+            .find(|(name, _)| *name == wanted)
+            .map(|(_, fields)| fields)
+    };
+
+    let ids: Vec<String> = match listed {
+        Some(listed) => listed
+            .split(';')
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        None => all
+            .iter()
+            .filter_map(|(name, _)| name.strip_prefix("Desktop Action "))
+            .map(str::to_owned)
+            .collect(),
+    };
+
+    ids.into_iter()
+        .filter_map(|id| {
+            let fields = group_of(&id)?;
+            Some(DesktopAction {
+                name: localized(fields, "Name")?,
+                exec: fields.get("Exec").filter(|exec| !exec.is_empty())?.clone(),
+                icon: localized(fields, "Icon"),
+                id,
+            })
+        })
+        .collect()
+}
+
 /// Whether a `TryExec` value names something runnable.
 ///
 /// An absolute path is checked directly; a bare name is looked for on `PATH`, as the spec says.
@@ -190,13 +299,16 @@ fn on_path(program: &str) -> bool {
     std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
 }
 
-/// Pull one group's key/value pairs out of a desktop file.
+/// Every group in a desktop file, in the order the file lists them.
+///
+/// In order because the action groups are read from it, and a file that gives no `Actions=`
+/// key has nothing else to say what order its actions should be offered in.
 ///
 /// Later duplicate keys lose, as `desktop-file-validate` would have rejected them anyway and
-/// the first is the more likely intent.
-fn group(text: &str, wanted: &str) -> Option<HashMap<String, String>> {
-    let mut fields = HashMap::new();
-    let mut inside = false;
+/// the first is the more likely intent. A duplicate *group* is the same: the first wins, and
+/// the second is parsed into its own entry that nothing will look up.
+fn groups(text: &str) -> Vec<(String, Fields)> {
+    let mut groups: Vec<(String, Fields)> = Vec::new();
 
     for line in text.lines() {
         let line = line.trim();
@@ -205,16 +317,13 @@ fn group(text: &str, wanted: &str) -> Option<HashMap<String, String>> {
             continue;
         }
         if let Some(header) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
-            if inside {
-                // The next group starts; the one we wanted is finished.
-                break;
-            }
-            inside = header == wanted;
+            groups.push((header.to_owned(), HashMap::new()));
             continue;
         }
-        if !inside {
+        // Anything before the first group header belongs to no group at all.
+        let Some((_, fields)) = groups.last_mut() else {
             continue;
-        }
+        };
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
@@ -227,7 +336,7 @@ fn group(text: &str, wanted: &str) -> Option<HashMap<String, String>> {
             .or_insert_with(|| unescape(value.trim()));
     }
 
-    inside.then_some(fields)
+    groups
 }
 
 /// Undo the escape sequences the spec defines for string values.
@@ -538,6 +647,214 @@ mod tests {
             entry.argv(&path()).unwrap(),
             ["files", "--title", "ファイル"]
         );
+    }
+
+    /// An abridged `steam.desktop`: `Actions=` plus the groups it names.
+    const STEAM: &str = "[Desktop Entry]\n\
+                         Type=Application\n\
+                         Name=Steam\n\
+                         Exec=/usr/bin/steam %U\n\
+                         Actions=Store;Library;Friends;\n\
+                         \n\
+                         [Desktop Action Store]\n\
+                         Name=Store\n\
+                         Name[ja]=ストア\n\
+                         Name[uk]=Крамниця\n\
+                         Exec=/usr/bin/steam steam://store\n\
+                         \n\
+                         [Desktop Action Library]\n\
+                         Name=Library\n\
+                         Name[ja]=ライブラリ\n\
+                         Icon=steam-library\n\
+                         Exec=/usr/bin/steam steam://open/games\n\
+                         \n\
+                         [Desktop Action Friends]\n\
+                         Name=Friends\n\
+                         Exec=/usr/bin/steam steam://open/friends\n";
+
+    fn steam(locale: &str) -> DesktopEntry {
+        DesktopEntry::parse_in(STEAM, &Locale::parse(locale)).expect("should parse")
+    }
+
+    fn action_names(entry: &DesktopEntry) -> Vec<&str> {
+        entry
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn actions_come_back_in_the_order_the_actions_key_gives() {
+        // The spec makes `Actions=` the authority on order, not the order of the groups.
+        let entry = steam("C");
+        assert_eq!(
+            entry
+                .actions
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect::<Vec<_>>(),
+            ["Store", "Library", "Friends"]
+        );
+        assert_eq!(action_names(&entry), ["Store", "Library", "Friends"]);
+    }
+
+    #[test]
+    fn an_action_name_is_translated_like_any_other() {
+        assert_eq!(
+            action_names(&steam("ja_JP.UTF-8")),
+            ["ストア", "ライブラリ", "Friends"]
+        );
+        assert_eq!(action_names(&steam("uk_UA.UTF-8"))[0], "Крамниця");
+    }
+
+    #[test]
+    fn an_action_keeps_its_own_exec_and_icon() {
+        let entry = steam("C");
+        let store = entry.action("Store").expect("Store");
+        assert_eq!(store.exec, "/usr/bin/steam steam://store");
+        assert_eq!(store.icon, None);
+        assert_eq!(
+            entry.action("Library").and_then(|a| a.icon.as_deref()),
+            Some("steam-library")
+        );
+        assert_eq!(entry.action("Nope"), None);
+    }
+
+    #[test]
+    fn an_action_runs_its_own_command_not_the_entrys() {
+        // The whole point: choosing "Store" must not simply start Steam.
+        let entry = steam("C");
+        let store = entry.action("Store").expect("Store");
+        assert_eq!(
+            store.argv(entry.name.as_deref(), &path()).unwrap(),
+            ["/usr/bin/steam", "steam://store"]
+        );
+        assert_eq!(entry.argv(&path()).unwrap(), ["/usr/bin/steam"]);
+    }
+
+    #[test]
+    fn an_action_group_the_actions_key_does_not_name_is_ignored() {
+        // The spec's rule, and a real protection: a group nobody listed is not an offer.
+        let entry = DesktopEntry::parse_in(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Thing\n\
+             Exec=thing\n\
+             Actions=Wanted;\n\
+             \n\
+             [Desktop Action Wanted]\n\
+             Name=Wanted\n\
+             Exec=thing --wanted\n\
+             \n\
+             [Desktop Action Sneaky]\n\
+             Name=Sneaky\n\
+             Exec=rm -rf /\n",
+            &Locale::untranslated(),
+        )
+        .expect("should parse");
+        assert_eq!(action_names(&entry), ["Wanted"]);
+    }
+
+    #[test]
+    fn a_file_with_no_actions_key_falls_back_to_the_groups_in_order() {
+        // Not what the spec says -- it would ignore them -- but a hand-written file that
+        // forgot the key is better served by showing them than by showing nothing.
+        let entry = DesktopEntry::parse_in(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Thing\n\
+             Exec=thing\n\
+             \n\
+             [Desktop Action Second]\n\
+             Name=Second\n\
+             Exec=thing --second\n\
+             \n\
+             [Desktop Action First]\n\
+             Name=First\n\
+             Exec=thing --first\n",
+            &Locale::untranslated(),
+        )
+        .expect("should parse");
+        assert_eq!(action_names(&entry), ["Second", "First"]);
+    }
+
+    #[test]
+    fn an_action_missing_a_name_or_an_exec_is_dropped() {
+        // The spec requires both. Without a `Name` there is no row to draw, and without an
+        // `Exec` the row would do nothing when chosen.
+        let entry = DesktopEntry::parse_in(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Thing\n\
+             Exec=thing\n\
+             Actions=Nameless;Inert;Fine;\n\
+             \n\
+             [Desktop Action Nameless]\n\
+             Exec=thing --nameless\n\
+             \n\
+             [Desktop Action Inert]\n\
+             Name=Inert\n\
+             \n\
+             [Desktop Action Fine]\n\
+             Name=Fine\n\
+             Exec=thing --fine\n",
+            &Locale::untranslated(),
+        )
+        .expect("should parse");
+        assert_eq!(action_names(&entry), ["Fine"]);
+    }
+
+    #[test]
+    fn an_actions_key_naming_a_group_that_is_not_there_skips_it() {
+        let entry = DesktopEntry::parse_in(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Thing\n\
+             Exec=thing\n\
+             Actions=Missing;Present;\n\
+             \n\
+             [Desktop Action Present]\n\
+             Name=Present\n\
+             Exec=thing --present\n",
+            &Locale::untranslated(),
+        )
+        .expect("should parse");
+        assert_eq!(action_names(&entry), ["Present"]);
+    }
+
+    #[test]
+    fn an_entry_with_no_action_groups_has_none() {
+        let entry = DesktopEntry::parse_in(MPV, &Locale::untranslated()).expect("should parse");
+        assert!(entry.actions.is_empty());
+    }
+
+    #[test]
+    fn the_desktop_entry_group_still_wins_over_a_later_action_group() {
+        // The regression the group rewrite could have caused: `group` used to stop at the next
+        // header, and now every group is parsed. The main group's keys must still be its own.
+        let entry = steam("C");
+        assert_eq!(entry.exec.as_deref(), Some("/usr/bin/steam %U"));
+        assert_eq!(entry.name.as_deref(), Some("Steam"));
+    }
+
+    #[test]
+    fn a_desktop_entry_group_that_is_not_first_is_still_found() {
+        let entry = DesktopEntry::parse_in(
+            "[Desktop Action Early]\n\
+             Name=Early\n\
+             Exec=thing --early\n\
+             \n\
+             [Desktop Entry]\n\
+             Type=Application\n\
+             Name=Thing\n\
+             Exec=thing\n\
+             Actions=Early;\n",
+            &Locale::untranslated(),
+        )
+        .expect("should parse");
+        assert_eq!(entry.exec.as_deref(), Some("thing"));
+        assert_eq!(action_names(&entry), ["Early"]);
     }
 
     #[test]

@@ -162,7 +162,7 @@ fn menu(canvas: &mut Canvas, fonts: &mut Fonts, menu: &Menu) {
         }
 
         let baseline = row.y + (row.h - line) / 2 + ascent;
-        let width = fonts.width(Face::Bold, crate::menu::LABEL_PX, entry.label);
+        let width = fonts.width(Face::Bold, crate::menu::LABEL_PX, &entry.label);
         let (x, colour) = if entry.is_header() {
             // The title is centred; everything else is left-aligned at the label inset.
             ((row.x + (row.w - width) / 2), palette::FOREGROUND)
@@ -184,7 +184,7 @@ fn menu(canvas: &mut Canvas, fonts: &mut Fonts, menu: &Menu) {
                 baseline,
                 colour,
             },
-            entry.label,
+            &entry.label,
         );
 
         // The header is closed off with a groove, as the IRIX menu had.
@@ -554,6 +554,7 @@ mod tests {
                 kind: Kind::Launcher,
                 launcher: Some(crate::entries::Launcher {
                     is_application: true,
+                    actions: Vec::new(),
                     icon: icon.map(str::to_owned),
                     running_icon: running_icon.map(str::to_owned),
                     identities: vec!["thing".to_owned()],
@@ -780,10 +781,15 @@ mod tests {
             return;
         }
         let placed = placed(&["a.txt"]);
-        // Posted right over the first icon's cell.
-        let menu = Menu::new(Point::new(placed[0].rect.x - 20, placed[0].rect.y), 0);
-
         let mut fonts = Fonts::load().expect("fonts");
+        // Posted right over the first icon's cell.
+        let menu = Menu::new(
+            Point::new(placed[0].rect.x - 20, placed[0].rect.y),
+            0,
+            None,
+            |label| fonts.width(Face::Bold, crate::menu::LABEL_PX, label),
+        );
+
         let mut images = Images::default();
         let mut pixels = vec![0u8; 1280 * 800 * 4];
         {
@@ -834,12 +840,14 @@ mod tests {
                 .expect("row")
         };
 
-        let mut menu = Menu::new(Point::new(100, 100), 0);
+        let mut fonts = Fonts::load().expect("fonts");
+        let mut menu = Menu::new(Point::new(100, 100), 0, None, |label| {
+            fonts.width(Face::Bold, crate::menu::LABEL_PX, label)
+        });
         let log_out = row_of(&menu, "Log Out");
         let row = menu.row(log_out);
         menu.hover(Point::new(row.x + row.w / 2, row.y + row.h / 2));
 
-        let mut fonts = Fonts::load().expect("fonts");
         let mut images = Images::default();
         let mut pixels = vec![0u8; 1280 * 800 * 4];
         {
@@ -892,6 +900,7 @@ mod tests {
                 kind: Kind::Launcher,
                 launcher: Some(crate::entries::Launcher {
                     is_application: false,
+                    actions: Vec::new(),
                     icon: None,
                     running_icon: None,
                     identities: vec!["site".to_owned()],

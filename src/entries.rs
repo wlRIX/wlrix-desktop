@@ -42,6 +42,21 @@ pub struct Launcher {
     pub running_icon: Option<String>,
     /// The app ids its windows might use; see [`crate::running`].
     pub identities: Vec<String>,
+    /// The `[Desktop Action …]` groups, in the order to offer them, already in the user's
+    /// language. The right-click menu lists these when this launcher is the only thing
+    /// selected; see [`crate::menu`].
+    pub actions: Vec<LauncherAction>,
+}
+
+/// One of a launcher's alternative ways in, as the menu needs it.
+///
+/// Only the id and the label: what an action *runs* is read back out of the file when it is
+/// chosen, the same way opening a launcher does. Holding a parsed command line here would mean
+/// the menu could run something the file no longer says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LauncherAction {
+    pub id: String,
+    pub name: String,
 }
 
 /// One file on the desktop.
@@ -114,6 +129,14 @@ impl Entry {
             identities: crate::running::identities(&desktop, path),
             icon: desktop.icon,
             running_icon: desktop.running_icon,
+            actions: desktop
+                .actions
+                .into_iter()
+                .map(|action| LauncherAction {
+                    id: action.id,
+                    name: action.name,
+                })
+                .collect(),
         });
 
         Some(Self {

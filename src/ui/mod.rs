@@ -65,11 +65,11 @@ use crate::config::Config;
 use crate::entries::Entry;
 use crate::image::Images;
 use crate::layout::{Grid, Metrics, Placed, Point, Rect};
-use crate::menu::{Action, Menu};
+use crate::menu::{Action, Actions as MenuActions, Menu};
 use crate::running::Running;
 use crate::select::Selection;
 use crate::state::State;
-use crate::theme::font::Fonts;
+use crate::theme::font::{Face, Fonts};
 use crate::watch::Watch;
 
 /// `wl_pointer`'s buttons, from `linux/input-event-codes.h`.
@@ -411,14 +411,67 @@ impl Desktop {
     /// row that looks disabled cannot act, and one that looks live cannot fail.
     fn open_menu(&mut self, at: Point) {
         let selected = self.selection.selected().len();
+        let launcher = self.lone_launcher();
         let area = Rect::new(0, 0, self.width.max(1) as i32, self.height.max(1) as i32);
-        let origin = Menu::clamp(at, Menu::size_for(selected), area);
-        self.menu = Some(Menu::new(origin, selected));
+
+        // How wide a label is belongs to the font, and the menu knows nothing about fonts; it
+        // asks through here. `&mut` because `Fonts` caches its shaping as it measures.
+        let fonts = &mut self.fonts;
+        let mut measure = |label: &str| fonts.width(Face::Bold, crate::menu::LABEL_PX, label);
+        let actions = launcher
+            .as_ref()
+            .map(|(name, items)| MenuActions { entry: name, items });
+
+        let size = Menu::size_for(selected, actions.clone(), &mut measure);
+        let origin = Menu::clamp(at, size, area);
+        let menu = Menu::new(origin, selected, actions, &mut measure);
+
+        self.menu = Some(menu);
         self.dirty = true;
     }
 
-    /// Carry out a menu choice.
-    fn perform(&mut self, action: Action) {
+    /// The selected launcher's actions, when exactly one launcher is selected and it has any.
+    ///
+    /// `None` for anything else: an action belongs to one file, so "Store" applied to three
+    /// selected icons would mean nothing.
+    fn lone_launcher(&self) -> Option<(String, Vec<crate::entries::LauncherAction>)> {
+        let [name] = self.selection.selected() else {
+            return None;
+        };
+        let entry = self.entries.iter().find(|entry| &entry.name == name)?;
+        let launcher = entry.launcher.as_ref()?;
+        (!launcher.actions.is_empty()).then(|| (entry.name.clone(), launcher.actions.clone()))
+    }
+
+    /// Run one of a launcher's `[Desktop Action …]` groups.
+    ///
+    /// The file is read again rather than run from what the menu was built with. The menu can
+    /// sit open for as long as the user likes, and a launcher edited or replaced underneath it
+    /// should run what it says now or not at all.
+    fn run_action(&mut self, name: &str, id: &str) {
+        let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .cloned()
+        else {
+            return;
+        };
+        match crate::open::action(&entry, id, &self.config) {
+            Ok(child) => {
+                eprintln!(
+                    "wlrix-desktop: ran {} action {id:?} (pid {})",
+                    entry.name,
+                    child.id()
+                );
+                self.children.push(child);
+            }
+            Err(why) => eprintln!("wlrix-desktop: {why}"),
+        }
+    }
+
+    /// Carry out a menu choice. `menu` is the one it was chosen from, for [`Action::Run`].
+    fn perform(&mut self, action: Action, menu: &Menu) {
         match action {
             Action::LogOut => self.log_out(),
             // Open every selected item, exactly as double-clicking each would.
@@ -436,6 +489,14 @@ impl Desktop {
                     .collect();
                 self.selection.select_all(names);
                 self.dirty = true;
+            }
+            Action::Run(index) => {
+                // Copied out before touching `self`: the menu is borrowed for the length of
+                // this call and `run_action` needs the whole of it mutably.
+                if let Some((name, id)) = menu.action_target(index) {
+                    let (name, id) = (name.to_owned(), id.to_owned());
+                    self.run_action(&name, &id);
+                }
             }
             // Drawn but disabled, so `action_at` never hands these back. Matched explicitly
             // rather than with a wildcard, so adding an action cannot silently do nothing.
@@ -800,7 +861,7 @@ impl PointerHandler for Desktop {
                     if let Some(menu) = self.menu.take() {
                         self.dirty = true;
                         if let Some(action) = menu.action_at(point) {
-                            self.perform(action);
+                            self.perform(action, &menu);
                         }
                         continue;
                     }

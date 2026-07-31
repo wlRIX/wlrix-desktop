@@ -36,18 +36,18 @@ Name[zh_CN]=mpv 媒体播放器
 Name[zh_TW]=mpv 媒體播放器
 ```
 
-The locale comes from `LC_ALL`, then `LC_MESSAGES`, then `LANG`. It reads `lang_COUNTRY.ENCODING@MODIFIER`; the
-encoding takes no part in matching, and the rest is tried most specific first — `sr_RS@latin` looks for `sr_RS@latin`,
-`sr_RS`, `sr@latin`, `sr`, and then the plain `Name`. This is the spec's list and not a general "try a shorter
-language" rule: `zh_CN` and `zh_TW` are different text and neither stands in for the other. `C`, `POSIX` and an unset
-environment all mean the plain key.
+The locale comes from `LC_ALL`, then `LC_MESSAGES`, then `LANG`. It reads `lang_COUNTRY.ENCODING@MODIFIER`; the encoding
+takes no part in matching, and the rest is tried most specific first — `sr_RS@latin` looks for `sr_RS@latin`,
+`sr_RS`, `sr@latin`, `sr`, and then the plain `Name`. This is the spec's list and not a general "try a shorter language"
+rule: `zh_CN` and `zh_TW` are different text and neither stands in for the other. `C`, `POSIX` and an unset environment
+all mean the plain key.
 
 `Icon` is a `localestring` too, and follows the same lookup. `Exec` is not, and does not — a translated command line
 would be a different program.
 
-Labels wrap to two lines, breaking between words where it can. Where a word break would cost the end of the name — as
-it does for "mpv メディアプレイヤー", which has one space and then a run too long for a line — it breaks mid-run
-instead. Showing the whole name is worth more than tidy words. What still does not fit is cut with an ellipsis.
+Labels wrap to two lines, breaking between words where it can. Where a word break would cost the end of the name — as it
+does for "mpv メディアプレイヤー", which has one space and then a run too long for a line — it breaks mid-run instead.
+Showing the whole name is worth more than tidy words. What still does not fit is cut with an ellipsis.
 
 ## The magic carpet
 
@@ -87,6 +87,50 @@ Two sources, because neither alone is right. **Windows**, via `ext-foreign-tople
 they count what is actually on screen however it was started, and notice an application quitting. But they say nothing
 during the second or two before the first window maps, so a **process we launched** counts too. A window is matched to a
 launcher by `StartupWMClass`, then the desktop file's basename, then the `Exec` binary — case-insensitively.
+
+## The desktop menu
+
+Right-clicking posts the 4Dwm menu, styled as the compositor's window menu and opening with a centred "Desktop"
+header. Log Out, Open, Remove and Select All work; Make Copy, Make Reference, Change Permissions and Add New Directory
+are drawn disabled so the menu's shape is right. Open and Remove gray out with nothing selected.
+
+### Launcher actions
+
+A `.desktop` file can offer more than one way in. Steam's lists Store, Library, Friends and the rest as
+`[Desktop Action …]` groups; a browser offers a private window. When **exactly one** launcher is selected and it has
+any, they are added below the fixed items, after a third separator:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=Steam
+Exec=/usr/bin/steam %U
+Actions=Store;Library;Friends;
+
+[Desktop Action Store]
+Name=Store
+Name[ja]=ストア
+Name[uk]=Крамниця
+Exec=/usr/bin/steam steam://store
+```
+
+Exactly one, because an action belongs to a particular file: "Store" means nothing applied to three selected icons at
+once. Names are `localestring`s and translate like any other, so the rows read in the user's language.
+
+`Actions=` decides which groups are offered and in what order, as the spec says — a `[Desktop Action …]` group it does
+not name is ignored, so a group nobody listed is not an offer. **One deviation:** a file with action groups and *no*
+`Actions=` key would be ignored entirely by the spec, and here the groups are taken in file order instead. Such a file
+is malformed either way, and a hand-written one that forgot the key is better served by showing them. An action missing
+`Name` or `Exec` is dropped in both cases; the spec requires both, and without them there is no row to draw or nothing
+to run.
+
+The panel is a fixed 186px wide until an action's label needs more, at which point it grows — a translated name out of a
+file is not bounded by "Change Permissions". A menu with no actions is laid out exactly as it always was.
+
+Choosing an action **re-reads the file**, rather than running what the menu was built from: the menu can sit open for as
+long as the user likes, and a launcher edited underneath it should run what it says now or not at all. The same rules
+apply as to opening the launcher — the execute bit is still the consent, since an action is a command line out of the
+same file, and `TryExec`, `Terminal=true` and `Path=` are all honored.
 
 ## How it reaches the screen
 

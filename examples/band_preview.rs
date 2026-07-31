@@ -12,11 +12,11 @@
 use std::path::PathBuf;
 use wlrix_desktop::image::Images;
 use wlrix_desktop::layout::{Grid, Metrics, Point, Rect};
-use wlrix_desktop::menu::Menu;
+use wlrix_desktop::menu::{Actions, Menu};
 use wlrix_desktop::running::Running;
 use wlrix_desktop::select::Selection;
 use wlrix_desktop::state::State;
-use wlrix_desktop::theme::font::Fonts;
+use wlrix_desktop::theme::font::{Face, Fonts};
 use wlrix_desktop::ui::{canvas::Canvas, paint};
 
 fn main() {
@@ -37,9 +37,32 @@ fn main() {
     selection.press(&placed, Point::new(w - 340, h - 120), 0);
     selection.motion(&placed, Point::new(w - 20, 40));
 
+    let mut fonts = Fonts::load().expect("fonts");
+
+    // The menu offers a launcher's `[Desktop Action …]` groups when the band happened to pick
+    // out exactly one launcher that has some -- the same rule the real desktop uses.
+    let lone_launcher = match selection.selected() {
+        [name] => entries
+            .iter()
+            .find(|entry| &entry.name == name)
+            .and_then(|entry| entry.launcher.as_ref())
+            .filter(|launcher| !launcher.actions.is_empty())
+            .map(|launcher| launcher.actions.clone()),
+        _ => None,
+    };
+
     // ...and, for the menu, post it over the middle with a row pointed at.
     let menu = show_menu.then(|| {
-        let mut menu = Menu::new(Point::new(60, 40), selection.selected().len());
+        let actions = lone_launcher.as_ref().map(|items| Actions {
+            entry: "preview",
+            items,
+        });
+        let mut menu = Menu::new(
+            Point::new(60, 40),
+            selection.selected().len(),
+            actions,
+            |label| fonts.width(Face::Bold, wlrix_desktop::menu::LABEL_PX, label),
+        );
         let row = menu.row(3);
         menu.hover(Point::new(row.x + row.w / 2, row.y + row.h / 2));
         menu
@@ -48,7 +71,6 @@ fn main() {
         selection.release(&placed, &grid, false);
     }
 
-    let mut fonts = Fonts::load().expect("fonts");
     let mut images = Images::default();
     let mut pixels = vec![0u8; (w * h * 4) as usize];
     {
