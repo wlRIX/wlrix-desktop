@@ -65,14 +65,16 @@ use crate::config::Config;
 use crate::entries::Entry;
 use crate::image::Images;
 use crate::layout::{Grid, Metrics, Placed, Point, Rect};
+use crate::menu::{Action, Menu};
 use crate::running::Running;
 use crate::select::Selection;
 use crate::state::State;
 use crate::theme::font::Fonts;
 use crate::watch::Watch;
 
-/// `wl_pointer`'s left button, from `linux/input-event-codes.h`.
+/// `wl_pointer`'s buttons, from `linux/input-event-codes.h`.
 const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 
 /// The whole desktop's state.
 pub struct Desktop {
@@ -109,6 +111,8 @@ pub struct Desktop {
     entries: Vec<Entry>,
     placed: Vec<Placed>,
     selection: Selection,
+    /// The right-click menu, while one is posted.
+    menu: Option<Menu>,
     /// Programs started by a double-click, kept only so they can be reaped; see `reap`.
     children: Vec<std::process::Child>,
 
@@ -193,6 +197,7 @@ pub fn run() -> Result<(), String> {
         entries: Vec::new(),
         placed: Vec::new(),
         selection: Selection::default(),
+        menu: None,
         children: Vec::new(),
         dirty: true,
         exit: false,
@@ -214,6 +219,8 @@ pub fn run() -> Result<(), String> {
         ),
     }
 
+    // Kept for the loop below, to tell a compositor that has gone away from a real failure.
+    let health = conn.clone();
     WaylandSource::new(conn, event_queue)
         .insert(loop_handle.clone())
         .map_err(|err| format!("could not drive Wayland from the loop: {err}"))?;
@@ -244,9 +251,18 @@ pub fn run() -> Result<(), String> {
     desktop.ensure_surface(&qh2);
 
     loop {
-        event_loop
-            .dispatch(Duration::from_secs(1), &mut desktop)
-            .map_err(|err| format!("event loop failed: {err}"))?;
+        if let Err(err) = event_loop.dispatch(Duration::from_secs(1), &mut desktop) {
+            // The compositor going away is the ordinary end of a Wayland client's life, not a
+            // failure: logging out from the desktop's own menu looks exactly like this, and
+            // reporting it would put an error in the session log every single time. A
+            // connection that is still usable means something else broke, which is worth
+            // saying.
+            return if health.flush().is_err() {
+                Ok(())
+            } else {
+                Err(format!("event loop failed: {err}"))
+            };
+        }
         // Painted after each batch rather than on a frame callback: the desktop redraws on
         // demand -- a hover, a click, a file appearing -- and a frame callback only arrives
         // after a commit that asked for one, so waiting on it stalls once nothing is moving.
@@ -389,6 +405,87 @@ impl Desktop {
         }
     }
 
+    /// Post the desktop menu at `at`, clamped so the whole panel is reachable.
+    ///
+    /// What each row can do is decided here, once, from the selection as it stands -- so a
+    /// row that looks disabled cannot act, and one that looks live cannot fail.
+    fn open_menu(&mut self, at: Point) {
+        let selected = self.selection.selected().len();
+        let area = Rect::new(0, 0, self.width.max(1) as i32, self.height.max(1) as i32);
+        let origin = Menu::clamp(at, Menu::size_for(selected), area);
+        self.menu = Some(Menu::new(origin, selected));
+        self.dirty = true;
+    }
+
+    /// Carry out a menu choice.
+    fn perform(&mut self, action: Action) {
+        match action {
+            Action::LogOut => self.log_out(),
+            // Open every selected item, exactly as double-clicking each would.
+            Action::Open => {
+                for name in self.selection.selected().to_vec() {
+                    self.activate(&name);
+                }
+            }
+            Action::Remove => self.remove_selected(),
+            Action::SelectAll => {
+                let names: Vec<String> = self
+                    .entries
+                    .iter()
+                    .map(|entry| entry.name.clone())
+                    .collect();
+                self.selection.select_all(names);
+                self.dirty = true;
+            }
+            // Drawn but disabled, so `action_at` never hands these back. Matched explicitly
+            // rather than with a wildcard, so adding an action cannot silently do nothing.
+            Action::MakeCopy
+            | Action::MakeReference
+            | Action::ChangePermissions
+            | Action::AddNewDirectory => {}
+        }
+    }
+
+    /// End the session and return to the greeter.
+    ///
+    /// The compositor *is* the session -- `wlrix-session` starts it and exits when it does --
+    /// so ending the session means asking the compositor to stop. It drops its pid in a
+    /// well-known file for exactly this kind of thing; the settings apps use the same file to
+    /// send it a `SIGHUP`.
+    ///
+    /// There is no "really log out?" here because there is nowhere to ask: the desktop cannot
+    /// put a dialog on screen yet. Choosing the item is taken as meaning it.
+    fn log_out(&mut self) {
+        match crate::session::log_out() {
+            Ok(pid) => eprintln!("wlrix-desktop: asked the compositor (pid {pid}) to stop"),
+            Err(why) => eprintln!("wlrix-desktop: could not log out: {why}"),
+        }
+    }
+
+    /// Move every selected item to the trash.
+    ///
+    /// Trashed, not deleted: there is no confirmation and no undo, so a misclick on a
+    /// band-selected group must be recoverable. See [`crate::trash`].
+    fn remove_selected(&mut self) {
+        let selected = self.selection.selected().to_vec();
+        let mut removed = 0;
+        for name in &selected {
+            let Some(entry) = self.entries.iter().find(|entry| &entry.name == name) else {
+                continue;
+            };
+            match crate::trash::trash(&entry.path) {
+                Ok(()) => removed += 1,
+                Err(why) => eprintln!("wlrix-desktop: {why}"),
+            }
+        }
+        if removed > 0 {
+            eprintln!("wlrix-desktop: moved {removed} item(s) to the trash");
+            // The watch will notice too, but rescanning now means the icons go immediately
+            // rather than after the inotify round trip.
+            self.rescan();
+        }
+    }
+
     /// Clear away children that have exited.
     ///
     /// Nothing waits on a launched program -- it outlives the double-click by design -- so
@@ -449,6 +546,7 @@ impl Desktop {
                 placed: &self.placed,
                 selection: &self.selection,
                 running: &self.running,
+                menu: self.menu.as_ref(),
                 icon_size: self.metrics.icon,
             },
         );
@@ -674,6 +772,13 @@ impl PointerHandler for Desktop {
             let point = Point::new(event.position.0 as i32, event.position.1 as i32);
             match event.kind {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                    // An open menu owns the pointer: it is drawn over the desktop, so
+                    // hovering an icon underneath would highlight something the user cannot
+                    // reach without putting the menu away first.
+                    if let Some(menu) = self.menu.as_mut() {
+                        self.dirty |= menu.hover(point);
+                        continue;
+                    }
                     // While a button is held this is a drag or a rubber band; otherwise a
                     // hover. Both are asked, and each says whether anything worth redrawing
                     // changed.
@@ -684,7 +789,21 @@ impl PointerHandler for Desktop {
                 PointerEventKind::Leave { .. } => {
                     self.dirty |= self.selection.leave();
                 }
+                // A right click posts the menu; a second one moves it.
+                PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                    self.open_menu(point);
+                }
                 PointerEventKind::Press { button, time, .. } if button == BTN_LEFT => {
+                    // With a menu open, a press either chooses a row or puts the menu away.
+                    // Either way it does not reach the desktop: clicking "Remove" should not
+                    // also start a rubber band underneath it.
+                    if let Some(menu) = self.menu.take() {
+                        self.dirty = true;
+                        if let Some(action) = menu.action_at(point) {
+                            self.perform(action);
+                        }
+                        continue;
+                    }
                     let pressed = self.selection.press(&self.placed, point, time);
                     self.dirty |= pressed.changed;
                     // A double-click opens what it landed on.

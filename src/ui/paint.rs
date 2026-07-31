@@ -21,12 +21,14 @@ use std::path::Path;
 use crate::entries::Entry;
 use crate::image::Images;
 use crate::layout::{Placed, Point};
+use crate::menu::Menu;
 use crate::running::Running;
 use crate::select::Selection;
 use crate::theme::font::{Face, Fonts, Run};
 use crate::theme::palette;
 use crate::ui::canvas::{Canvas, Rect};
 use crate::ui::icons::{self, Tint};
+use crate::ui::motif;
 
 /// Label text size, in pixels.
 const LABEL_PX: f32 = 12.0;
@@ -69,6 +71,8 @@ pub struct Frame<'a> {
     /// Which applications have a window open. Empty is a perfectly good answer -- it means
     /// every carpet is closed.
     pub running: &'a Running,
+    /// The right-click menu, while one is posted.
+    pub menu: Option<&'a Menu>,
     pub icon_size: i32,
 }
 
@@ -106,6 +110,95 @@ pub fn desktop(canvas: &mut Canvas, frame: &mut Frame) {
     if let Some(band) = frame.selection.band() {
         band_outline(canvas, band);
     }
+
+    // The menu is above even that: it is chrome laid over the desktop, not on it.
+    if let Some(menu) = frame.menu {
+        self::menu(canvas, frame.fonts, menu);
+    }
+}
+
+/// Draw the desktop menu: a raised panel, a centred title, and the rows.
+///
+/// The geometry and the colors are the compositor's window menu
+/// (`wlrix-compositor/src/{menu,decoration}.rs`), because the two are the same object as far
+/// as the user is concerned.
+fn menu(canvas: &mut Canvas, fonts: &mut Fonts, menu: &Menu) {
+    let panel = menu.panel();
+    motif::panel(
+        canvas,
+        Rect::new(panel.x, panel.y, panel.w, panel.h),
+        palette::FACE,
+        motif::Bevel::raised(
+            palette::FACE_TOP_SHADOW,
+            palette::FACE_BOTTOM_SHADOW,
+            crate::menu::BEVEL,
+        ),
+    );
+
+    let ascent = fonts.ascent(Face::Bold, crate::menu::LABEL_PX);
+    let line = fonts.line_height(Face::Bold, crate::menu::LABEL_PX);
+
+    for (index, entry) in menu.entries.iter().enumerate() {
+        let row = menu.row(index);
+        let row = Rect::new(row.x, row.y, row.w, row.h);
+
+        if entry.is_separator() {
+            groove(canvas, row);
+            continue;
+        }
+
+        // The pointed-at row stands proud of the panel, as a button does.
+        if menu.hovered == Some(index) {
+            motif::panel(
+                canvas,
+                row,
+                palette::MENU_HIGHLIGHT,
+                motif::Bevel::raised(
+                    palette::FACE_TOP_SHADOW,
+                    palette::FACE_BOTTOM_SHADOW,
+                    crate::menu::BEVEL,
+                ),
+            );
+        }
+
+        let baseline = row.y + (row.h - line) / 2 + ascent;
+        let width = fonts.width(Face::Bold, crate::menu::LABEL_PX, entry.label);
+        let (x, colour) = if entry.is_header() {
+            // The title is centred; everything else is left-aligned at the label inset.
+            ((row.x + (row.w - width) / 2), palette::FOREGROUND)
+        } else if entry.enabled {
+            (row.x + crate::menu::LABEL_INSET, palette::FOREGROUND)
+        } else {
+            // Disabled rows take the bottom shadow, which is how Motif greys a label out.
+            (
+                row.x + crate::menu::LABEL_INSET,
+                palette::FACE_BOTTOM_SHADOW,
+            )
+        };
+        fonts.draw(
+            canvas,
+            Run {
+                face: Face::Bold,
+                px: crate::menu::LABEL_PX,
+                x,
+                baseline,
+                colour,
+            },
+            entry.label,
+        );
+
+        // The header is closed off with a groove, as the IRIX menu had.
+        if entry.is_header() {
+            groove(canvas, Rect::new(row.x, row.y + row.h - 2, row.w, 2));
+        }
+    }
+}
+
+/// An etched groove across `row`: a dark line over a light one, Motif-style.
+fn groove(canvas: &mut Canvas, row: Rect) {
+    let y = row.y + row.h / 2 - 1;
+    canvas.fill_rect(Rect::new(row.x, y, row.w, 1), palette::FACE_BOTTOM_SHADOW);
+    canvas.fill_rect(Rect::new(row.x, y + 1, row.w, 1), palette::FACE_TOP_SHADOW);
 }
 
 /// Draw the rubber band: an unfilled black outline, nothing inside it.
@@ -360,6 +453,7 @@ mod tests {
     use super::*;
     use crate::entries::{Entry, Kind};
     use crate::layout::{Grid, Metrics, Rect as LayoutRect, Spot};
+    use crate::menu::Menu;
     use crate::theme::Rgb;
 
     /// Font loading needs a system font database, which a build machine may not have. Every
@@ -385,6 +479,7 @@ mod tests {
             placed,
             selection,
             running,
+            menu: None,
             icon_size: 64,
         }
     }
@@ -446,6 +541,7 @@ mod tests {
                     placed,
                     selection: &Selection::default(),
                     running,
+                    menu: None,
                     icon_size: 64,
                 },
             );
@@ -585,6 +681,7 @@ mod tests {
                     placed,
                     selection,
                     running: &running,
+                    menu: None,
                     icon_size: 64,
                 },
             );
@@ -637,6 +734,109 @@ mod tests {
         let mut pixels = paint_with(&placed, &selection);
         let canvas = Canvas::new(&mut pixels, 1280, 800);
         assert_eq!(canvas.get(100, 100), Rgb(0), "a stray dot was drawn");
+    }
+
+    #[test]
+    fn the_menu_is_drawn_over_the_icons() {
+        if Fonts::load().is_err() {
+            return;
+        }
+        let placed = placed(&["a.txt"]);
+        // Posted right over the first icon's cell.
+        let menu = Menu::new(Point::new(placed[0].rect.x - 20, placed[0].rect.y), 0);
+
+        let mut fonts = Fonts::load().expect("fonts");
+        let mut images = Images::default();
+        let mut pixels = vec![0u8; 1280 * 800 * 4];
+        {
+            let mut canvas = Canvas::new(&mut pixels, 1280, 800);
+            desktop(
+                &mut canvas,
+                &mut Frame {
+                    fonts: &mut fonts,
+                    images: &mut images,
+                    placed: &placed,
+                    selection: &Selection::default(),
+                    running: &Running::default(),
+                    menu: Some(&menu),
+                    icon_size: 64,
+                },
+            );
+        }
+        let canvas = Canvas::new(&mut pixels, 1280, 800);
+
+        // Every pixel of the panel is opaque, so neither the icon under it nor the wallpaper
+        // below shows through. That is the whole claim: the menu is chrome over the desktop.
+        let panel = menu.panel();
+        for y in panel.y..panel.y + panel.h {
+            for x in panel.x..panel.x + panel.w {
+                assert_eq!(
+                    canvas.get(x, y).0 >> 24,
+                    0xff,
+                    "({x},{y}) on the panel is not opaque"
+                );
+            }
+        }
+        // Just outside it, the desktop is still bare.
+        assert_eq!(canvas.get(panel.x - 1, panel.y + panel.h / 2), Rgb(0));
+    }
+
+    #[test]
+    fn a_hovered_row_is_highlighted_and_a_disabled_one_is_not() {
+        if Fonts::load().is_err() {
+            return;
+        }
+        let placed: Vec<Placed> = Vec::new();
+
+        // Log Out is always enabled; Open is disabled with nothing selected.
+        let row_of = |menu: &Menu, label: &str| {
+            menu.entries
+                .iter()
+                .position(|entry| entry.label == label)
+                .expect("row")
+        };
+
+        let mut menu = Menu::new(Point::new(100, 100), 0);
+        let log_out = row_of(&menu, "Log Out");
+        let row = menu.row(log_out);
+        menu.hover(Point::new(row.x + row.w / 2, row.y + row.h / 2));
+
+        let mut fonts = Fonts::load().expect("fonts");
+        let mut images = Images::default();
+        let mut pixels = vec![0u8; 1280 * 800 * 4];
+        {
+            let mut canvas = Canvas::new(&mut pixels, 1280, 800);
+            desktop(
+                &mut canvas,
+                &mut Frame {
+                    fonts: &mut fonts,
+                    images: &mut images,
+                    placed: &placed,
+                    selection: &Selection::default(),
+                    running: &Running::default(),
+                    menu: Some(&menu),
+                    icon_size: 64,
+                },
+            );
+        }
+        let canvas = Canvas::new(&mut pixels, 1280, 800);
+
+        // The hovered row wears the highlight; an untouched one keeps the panel face.
+        let inside = |index: usize| {
+            let row = menu.row(index);
+            // Just inside the bevel, and clear of the label text on the left.
+            (row.x + row.w - 6, row.y + row.h / 2)
+        };
+        let (x, y) = inside(log_out);
+        assert_eq!(canvas.get(x, y), palette::MENU_HIGHLIGHT);
+
+        let open = row_of(&menu, "Open");
+        let (x, y) = inside(open);
+        assert_eq!(
+            canvas.get(x, y),
+            palette::FACE,
+            "a disabled row must not highlight"
+        );
     }
 
     #[test]

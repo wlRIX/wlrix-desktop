@@ -35,3 +35,9 @@ pub const FACE_TOP_SHADOW: Rgb = Rgb(0xff_e5e5e5);
 
 /// `#545454`
 pub const FACE_BOTTOM_SHADOW: Rgb = Rgb(0xff_545454);
+
+/// `#000000`
+pub const FOREGROUND: Rgb = Rgb(0xff_000000);
+
+/// `#a59f80`
+pub const MENU_HIGHLIGHT: Rgb = Rgb(0xff_a59f80);

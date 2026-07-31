@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Renders the desktop mid-rubber-band to a PNM, for eyeballing the outline.
+//! Renders one desktop frame to a PNM, for eyeballing things a screenshot cannot catch.
 //!
-//! The band only exists between a press and a release, so it cannot be caught with a
-//! screenshot without a hand on the mouse. This drives the same `Selection` the desktop does
-//! and paints one frame.
+//! The rubber band and the right-click menu only exist between a press and a release, or
+//! while a menu is posted, so neither can be grabbed without a hand on the mouse. This drives
+//! the same `Selection` and `Menu` the desktop does and paints one frame.
 //!
-//! `cargo run --example band_preview -- ~/Desktop out.pnm`
+//! ```sh
+//! cargo run --example band_preview -- ~/Desktop band.pnm        # mid-band
+//! cargo run --example band_preview -- ~/Desktop menu.pnm --menu # menu posted
+//! ```
 use std::path::PathBuf;
 use wlrix_desktop::image::Images;
 use wlrix_desktop::layout::{Grid, Metrics, Point, Rect};
+use wlrix_desktop::menu::Menu;
 use wlrix_desktop::running::Running;
 use wlrix_desktop::select::Selection;
 use wlrix_desktop::state::State;
@@ -19,6 +23,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let dir = PathBuf::from(args.next().expect("a desktop directory"));
     let out = args.next().unwrap_or_else(|| "band.pnm".into());
+    let show_menu = args.next().as_deref() == Some("--menu");
     let (w, h) = (900, 560);
 
     let entries = wlrix_desktop::entries::read(&dir);
@@ -31,6 +36,17 @@ fn main() {
     let mut selection = Selection::default();
     selection.press(&placed, Point::new(w - 340, h - 120), 0);
     selection.motion(&placed, Point::new(w - 20, 40));
+
+    // ...and, for the menu, post it over the middle with a row pointed at.
+    let menu = show_menu.then(|| {
+        let mut menu = Menu::new(Point::new(60, 40), selection.selected().len());
+        let row = menu.row(3);
+        menu.hover(Point::new(row.x + row.w / 2, row.y + row.h / 2));
+        menu
+    });
+    if show_menu {
+        selection.release(&placed, &grid, false);
+    }
 
     let mut fonts = Fonts::load().expect("fonts");
     let mut images = Images::default();
@@ -45,6 +61,7 @@ fn main() {
                 placed: &placed,
                 selection: &selection,
                 running: &Running::default(),
+                menu: menu.as_ref(),
                 icon_size: metrics.icon,
             },
         );

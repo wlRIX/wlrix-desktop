@@ -183,6 +183,11 @@ impl Selection {
         true
     }
 
+    /// Pick everything, for the menu's "Select All".
+    pub fn select_all(&mut self, names: Vec<String>) {
+        self.selected = names;
+    }
+
     /// The pointer left the surface.
     pub fn leave(&mut self) -> bool {
         if self.hovered.is_none() {
