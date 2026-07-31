@@ -9,6 +9,7 @@ pub mod desktop_entry;
 pub mod entries;
 pub mod image;
 pub mod layout;
+pub mod locale;
 pub mod menu;
 pub mod open;
 pub mod running;

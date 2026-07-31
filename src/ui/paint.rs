@@ -336,7 +336,7 @@ fn icon(canvas: &mut Canvas, frame: &mut Frame, item: &Placed, cell: Rect, tint:
     label(
         canvas,
         frame.fonts,
-        &item.entry.name,
+        &item.entry.label,
         Rect::new(
             cell.x,
             square.y + size + LABEL_GAP,
@@ -404,11 +404,16 @@ fn label(canvas: &mut Canvas, fonts: &mut Fonts, name: &str, area: Rect, tint: T
     }
 }
 
-/// Break a filename into at most `max_lines` lines that fit `width`.
+/// Break a label into at most `max_lines` lines that fit `width`.
 ///
-/// Broken by character, not by word: filenames are not prose, and `annual-report-final.txt`
-/// has no useful word boundaries. A name too long for the lines available is cut and given an
-/// ellipsis, since a label that overflowed its cell would collide with its neighbor.
+/// Prefers to break between words, so a launcher's `Name` does not read as "mpv Media Play /
+/// er" -- but **only when that does not cost the end of the name**. Tidy words are worth less
+/// than the whole label: "mpv メディアプレイヤー" breaks after "mpv" if it is allowed to, which
+/// leaves a nearly empty first line and a second too wide to fit, so it falls back to breaking
+/// mid-run and shows everything. Filenames go the same way, having no word boundary to find.
+///
+/// A name too long for the lines available either way is cut and given an ellipsis, since a
+/// label that overflowed its cell would collide with its neighbor.
 fn wrap(fonts: &mut Fonts, name: &str, width: i32, max_lines: usize) -> Vec<String> {
     if width <= 0 || max_lines == 0 {
         return Vec::new();
@@ -417,6 +422,24 @@ fn wrap(fonts: &mut Fonts, name: &str, width: i32, max_lines: usize) -> Vec<Stri
         return vec![name.to_owned()];
     }
 
+    let (words, words_cut) = break_lines(fonts, name, width, max_lines, true);
+    if !words_cut {
+        return words;
+    }
+    // Breaking at spaces lost the end of the name. Try again without them, and take whichever
+    // shows more -- if both are cut, the tidier one wins.
+    let (characters, characters_cut) = break_lines(fonts, name, width, max_lines, false);
+    if characters_cut { words } else { characters }
+}
+
+/// One wrapping pass. Returns the lines, and whether text had to be dropped to fit them.
+fn break_lines(
+    fonts: &mut Fonts,
+    name: &str,
+    width: i32,
+    max_lines: usize,
+    at_spaces: bool,
+) -> (Vec<String>, bool) {
     let mut lines: Vec<String> = Vec::new();
     let mut line = String::new();
     // By `char`, so a multi-byte character is never split down the middle.
@@ -424,7 +447,20 @@ fn wrap(fonts: &mut Fonts, name: &str, width: i32, max_lines: usize) -> Vec<Stri
         let mut candidate = line.clone();
         candidate.push(character);
         if fonts.width(Face::Regular, LABEL_PX, &candidate) > width && !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
+            // A space at the very start is no use to break at -- it would push an empty line
+            // and lose a whole row to nothing.
+            let at = at_spaces
+                .then(|| line.rfind(' '))
+                .flatten()
+                .filter(|at| *at > 0);
+            let (head, rest) = match at {
+                // The space itself is dropped: it did its job by being the break.
+                Some(at) => (line[..at].to_owned(), line[at + 1..].to_owned()),
+                None => (std::mem::take(&mut line), String::new()),
+            };
+            lines.push(head);
+            // Whatever was after the space starts the next line rather than being lost.
+            line = rest;
             if lines.len() == max_lines {
                 break;
             }
@@ -434,7 +470,7 @@ fn wrap(fonts: &mut Fonts, name: &str, width: i32, max_lines: usize) -> Vec<Stri
 
     if lines.len() < max_lines && !line.is_empty() {
         lines.push(line);
-        return lines;
+        return (lines, false);
     }
 
     // Ran out of lines with text still to place: mark the last one as cut.
@@ -445,7 +481,7 @@ fn wrap(fonts: &mut Fonts, name: &str, width: i32, max_lines: usize) -> Vec<Stri
         }
         last.push('…');
     }
-    lines
+    (lines, true)
 }
 
 #[cfg(test)]
@@ -497,6 +533,7 @@ mod tests {
                 entry: Entry {
                     path: format!("/desktop/{name}").into(),
                     name: (*name).to_owned(),
+                    label: (*name).to_owned(),
                     kind: Kind::Plain,
                     launcher: None,
                 },
@@ -513,6 +550,7 @@ mod tests {
             entry: Entry {
                 path: format!("/desktop/{name}").into(),
                 name: name.to_owned(),
+                label: name.to_owned(),
                 kind: Kind::Launcher,
                 launcher: Some(crate::entries::Launcher {
                     is_application: true,
@@ -850,6 +888,7 @@ mod tests {
             entry: Entry {
                 path: "/desktop/site.desktop".into(),
                 name: "site.desktop".to_owned(),
+                label: "site.desktop".to_owned(),
                 kind: Kind::Launcher,
                 launcher: Some(crate::entries::Launcher {
                     is_application: false,
@@ -927,6 +966,62 @@ mod tests {
             "a one-line cut should be marked: {lines:?}"
         );
         assert!(fonts.width(Face::Regular, LABEL_PX, &lines[0]) <= 80);
+    }
+
+    #[test]
+    fn a_name_with_words_in_it_breaks_between_them() {
+        // What a launcher's `Name` looks like, now that labels are not only filenames.
+        let Some(mut fonts) = fonts() else { return };
+        let width = fonts.width(Face::Regular, LABEL_PX, "mpv Media Play");
+        let lines = wrap(&mut fonts, "mpv Media Player", width, LABEL_LINES);
+        assert_eq!(lines, ["mpv Media", "Player"], "broke mid-word: {lines:?}");
+    }
+
+    #[test]
+    fn a_name_with_no_spaces_still_breaks_wherever_it_has_to() {
+        // Filenames and CJK have no word boundary to find, so the character break stays.
+        let Some(mut fonts) = fonts() else { return };
+        let name = "mpvメディアプレイヤー";
+        let width = fonts.width(Face::Regular, LABEL_PX, "mpvメディア");
+        let lines = wrap(&mut fonts, name, width, LABEL_LINES);
+        assert!(lines.len() > 1, "should have wrapped: {lines:?}");
+        assert_eq!(lines.concat(), name, "lost text: {lines:?}");
+    }
+
+    #[test]
+    fn a_word_break_is_given_up_rather_than_lose_the_end_of_the_name() {
+        // The real case: "mpv メディアプレイヤー" breaks after "mpv" if space breaks are taken
+        // greedily, which leaves the whole Japanese run for one line that cannot hold it. The
+        // mid-run break is uglier and shows the entire name, which matters more.
+        let Some(mut fonts) = fonts() else { return };
+        let name = "mpv メディアプレイヤー";
+        let width = fonts.width(Face::Regular, LABEL_PX, "mpv メディア");
+        let lines = wrap(&mut fonts, name, width, LABEL_LINES);
+        assert!(
+            !lines.last().is_some_and(|line| line.ends_with('…')),
+            "gave up the end of the name to keep the words tidy: {lines:?}"
+        );
+        // The mid-run break keeps every character, space included, so this is the whole name.
+        assert_eq!(lines.concat(), name);
+    }
+
+    #[test]
+    fn a_word_too_long_for_a_line_is_still_broken() {
+        // The space break must not become the *only* break: one unbreakable word wider than
+        // the cell would otherwise overflow rather than wrap.
+        let Some(mut fonts) = fonts() else { return };
+        let lines = wrap(
+            &mut fonts,
+            &format!("a {}", "x".repeat(60)),
+            60,
+            LABEL_LINES,
+        );
+        for line in &lines {
+            assert!(
+                fonts.width(Face::Regular, LABEL_PX, line) <= 60,
+                "{line:?} is wider than the cell"
+            );
+        }
     }
 
     #[test]

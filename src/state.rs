@@ -274,6 +274,7 @@ mod tests {
         Entry {
             path: format!("/desktop/{name}").into(),
             name: name.to_owned(),
+            label: name.to_owned(),
             kind: crate::entries::Kind::Plain,
             launcher: None,
         }

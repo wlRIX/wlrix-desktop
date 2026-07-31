@@ -7,10 +7,15 @@
 //!
 //! [spec]: https://specifications.freedesktop.org/desktop-entry-spec/latest/
 //!
-//! Deliberately not a general parser. Other groups (`[Desktop Action …]`), localized keys,
-//! categories, MIME associations and startup notification are all skipped -- they matter to a
-//! menu, and the desktop is not one. What is here is what it takes to double-click a launcher
-//! and have the right process start.
+//! Deliberately not a general parser. Other groups (`[Desktop Action …]`), categories, MIME
+//! associations and startup notification are all skipped -- they matter to a menu, and the
+//! desktop is not one. What is here is what it takes to double-click a launcher and have the
+//! right process start, and to draw it with the right words underneath.
+//!
+//! Keys the spec types as `localestring` -- `Name` and `Icon`, of the ones read here -- are
+//! resolved through [`crate::locale`] as they are parsed, so what comes out is already in the
+//! user's language. Everything else, `Exec` and `Type` among them, is the same in every locale
+//! by definition; a translated command line would be a different program.
 //!
 //! **`Exec=` is a shell-*like* string but is not shell.** The spec defines its own quoting, and
 //! handing the line to `sh -c` instead would let a `.desktop` file run anything a shell can --
@@ -19,6 +24,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use crate::locale::Locale;
 
 /// wlRIX's own key for the icon to show while an application is running.
 ///
@@ -41,7 +48,9 @@ pub enum EntryType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopEntry {
     pub entry_type: EntryType,
-    /// The un-localized `Name`, used for the `%c` field code.
+    /// `Name`, in the user's language: what the label under the icon reads, and what the `%c`
+    /// field code expands to. The spec says `%c` is the *translated* name, so these are the
+    /// same string and not two.
     pub name: Option<String>,
     pub exec: Option<String>,
     /// A binary that must exist for the entry to be usable.
@@ -75,8 +84,28 @@ impl DesktopEntry {
     /// `None` if there is no such group, or it has no usable `Type`. Anything else malformed is
     /// skipped rather than fatal: a stray line in a file someone hand-edited should not stop
     /// the entry working.
+    ///
+    /// Localized keys are resolved for the process's own locale. [`parse_in`](Self::parse_in)
+    /// takes one instead, for tests and for anything that needs to ask about a locale it is not
+    /// running under.
     pub fn parse(text: &str) -> Option<Self> {
+        Self::parse_in(text, Locale::current())
+    }
+
+    /// Parse against a given locale. See [`parse`](Self::parse).
+    pub fn parse_in(text: &str, locale: &Locale) -> Option<Self> {
         let fields = group(text, "Desktop Entry")?;
+
+        // The spec's fallback walk, for the keys it types as `localestring`. A file with no
+        // translations at all lands on the plain key, which is the last candidate.
+        //
+        // An empty value does not count as a match: `Name[ja]=` is a broken translation, not a
+        // request for a nameless icon, so the walk carries on to the next candidate.
+        let localized = |key: &str| {
+            locale
+                .candidates(key)
+                .find_map(|candidate| fields.get(&candidate).filter(|value| !value.is_empty()))
+        };
 
         let entry_type = match fields.get("Type").map(String::as_str) {
             Some("Application") => EntryType::Application,
@@ -88,7 +117,7 @@ impl DesktopEntry {
 
         Some(Self {
             entry_type,
-            name: fields.get("Name").cloned(),
+            name: localized("Name").cloned(),
             exec: fields.get("Exec").cloned(),
             try_exec: fields.get("TryExec").cloned(),
             path: fields
@@ -98,7 +127,7 @@ impl DesktopEntry {
             terminal: fields.get("Terminal").map(String::as_str) == Some("true"),
             url: fields.get("URL").cloned(),
             hidden: fields.get("Hidden").map(String::as_str) == Some("true"),
-            icon: fields.get("Icon").filter(|icon| !icon.is_empty()).cloned(),
+            icon: localized("Icon").cloned(),
             running_icon: fields
                 .get(RUNNING_ICON_KEY)
                 .filter(|icon| !icon.is_empty())
@@ -189,12 +218,10 @@ fn group(text: &str, wanted: &str) -> Option<HashMap<String, String>> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        // Localised keys (`Name[ja]`) are skipped: nothing here displays a name, and taking
-        // one would mean picking a locale, which is a job for whatever does.
+        // Localized keys (`Name[ja]`) are kept under their whole name, brackets and all, so
+        // they cannot collide with the plain key. Which of them wins is a separate question,
+        // answered per lookup by `Locale::candidates`.
         let key = key.trim();
-        if key.contains('[') {
-            continue;
-        }
         fields
             .entry(key.to_owned())
             .or_insert_with(|| unescape(value.trim()));
@@ -397,17 +424,120 @@ mod tests {
         assert_eq!(entry.exec.as_deref(), Some("thing"));
     }
 
+    /// An abridged `mpv.desktop`: the shape every translated launcher has.
+    const MPV: &str = "[Desktop Entry]\n\
+                       Type=Application\n\
+                       Name=mpv Media Player\n\
+                       Name[fr]=Lecteur multimédia mpv\n\
+                       Name[ja]=mpv メディアプレイヤー\n\
+                       Name[zh_CN]=mpv 媒体播放器\n\
+                       Name[zh_TW]=mpv 媒體播放器\n\
+                       Icon=mpv\n\
+                       Exec=mpv --player-operation-mode=pseudo-gui -- %U\n";
+
+    /// `MPV`'s `Name`, as read under `locale`.
+    fn mpv_name(locale: &str) -> String {
+        DesktopEntry::parse_in(MPV, &Locale::parse(locale))
+            .expect("should parse")
+            .name
+            .expect("mpv has a Name")
+    }
+
+    #[test]
+    fn a_translated_name_is_taken_for_the_matching_locale() {
+        assert_eq!(mpv_name("ja_JP.UTF-8"), "mpv メディアプレイヤー");
+        assert_eq!(mpv_name("fr_FR.UTF-8"), "Lecteur multimédia mpv");
+    }
+
+    #[test]
+    fn a_country_picks_its_own_translation_over_the_other_ones() {
+        // The case that makes this worth doing properly: `zh_CN` and `zh_TW` are different
+        // text, and there is no plain `Name[zh]` to fall back to.
+        assert_eq!(mpv_name("zh_CN.UTF-8"), "mpv 媒体播放器");
+        assert_eq!(mpv_name("zh_TW.UTF-8"), "mpv 媒體播放器");
+    }
+
+    #[test]
+    fn a_country_falls_back_to_the_language_it_belongs_to() {
+        // Canadian French is not in the file, and French is.
+        assert_eq!(mpv_name("fr_CA.UTF-8"), "Lecteur multimédia mpv");
+    }
+
+    #[test]
+    fn an_untranslated_locale_gets_the_plain_key() {
+        assert_eq!(mpv_name("C"), "mpv Media Player");
+        assert_eq!(mpv_name(""), "mpv Media Player");
+    }
+
+    #[test]
+    fn a_locale_the_file_has_no_translation_for_gets_the_plain_key() {
+        assert_eq!(mpv_name("is_IS.UTF-8"), "mpv Media Player");
+    }
+
     #[test]
     fn localised_keys_do_not_shadow_the_plain_one() {
-        let entry = DesktopEntry::parse(
+        let entry = DesktopEntry::parse_in(
             "[Desktop Entry]\n\
              Type=Application\n\
              Name=Files\n\
              Name[ja]=ファイル\n\
              Exec=files\n",
+            &Locale::parse("de_DE.UTF-8"),
         )
         .expect("should parse");
         assert_eq!(entry.name.as_deref(), Some("Files"));
+    }
+
+    #[test]
+    fn only_localestring_keys_are_translated() {
+        // A translated `Exec` would be a different program. The spec types `Exec` as a plain
+        // string for exactly that reason, so a file carrying `Exec[ja]` is simply wrong and
+        // the key must be ignored rather than run.
+        let entry = DesktopEntry::parse_in(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Thing\n\
+             Exec=thing\n\
+             Exec[ja]=rm -rf /\n\
+             Icon=thing\n\
+             Icon[ja]=thing-ja\n",
+            &Locale::parse("ja_JP.UTF-8"),
+        )
+        .expect("should parse");
+        assert_eq!(entry.exec.as_deref(), Some("thing"));
+        // `Icon` *is* a localestring, so it does follow the locale.
+        assert_eq!(entry.icon.as_deref(), Some("thing-ja"));
+    }
+
+    #[test]
+    fn an_empty_translation_falls_through_to_the_plain_name() {
+        // Rather than labeling the icon with nothing at all, which is what an unfiltered
+        // lookup would do -- the empty value matched first and stopped the walk.
+        let entry = DesktopEntry::parse_in(
+            "[Desktop Entry]\nType=Application\nName=Files\nName[ja]=\nExec=files\n",
+            &Locale::parse("ja_JP.UTF-8"),
+        )
+        .expect("should parse");
+        assert_eq!(entry.name.as_deref(), Some("Files"));
+    }
+
+    #[test]
+    fn the_translated_name_is_what_the_percent_c_code_expands_to() {
+        // The spec says `%c` is the *translated* name, so this follows from the same lookup
+        // rather than being a second decision.
+        let entry = DesktopEntry::parse_in(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=Files\n\
+             Name[ja]=ファイル\n\
+             Exec=files --title %c\n",
+            &Locale::parse("ja_JP.UTF-8"),
+        )
+        .expect("should parse");
+        assert_eq!(
+            entry.argv(&path()).unwrap(),
+            ["files", "--title", "ファイル"]
+        );
     }
 
     #[test]

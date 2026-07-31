@@ -14,6 +14,41 @@ Files and folders are drawn as coverage masks and tinted by state: knocked-back 
 and IRIX's lamp yellow when selected. Drawing the shape once and blending the tint through it means the three states
 cannot drift apart.
 
+## Labels
+
+The label under an icon is the file name, except for a `.desktop` launcher, which is labeled with its `Name` — so
+`mpv.desktop` reads "mpv Media Player". A launcher with no `Name`, or one too broken to parse, falls back to its file
+name rather than going nameless. Icons are ordered by the label, so the order on screen is the order of the words the
+user can actually read; the file name breaks ties, since two launchers may share a `Name`.
+
+The label is only ever what is *shown*. Identity stays the file name — that is what positions are remembered under, and
+what selection and hit-testing work in terms of — so changing `LANG` does not scatter every launcher across the desktop.
+
+### Translations
+
+`Name` is a `localestring`: a launcher carries one per language, and the spec says which of them a given locale takes.
+
+```ini
+Name=mpv Media Player
+Name[fr]=Lecteur multimédia mpv
+Name[ja]=mpv メディアプレイヤー
+Name[zh_CN]=mpv 媒体播放器
+Name[zh_TW]=mpv 媒體播放器
+```
+
+The locale comes from `LC_ALL`, then `LC_MESSAGES`, then `LANG`. It reads `lang_COUNTRY.ENCODING@MODIFIER`; the
+encoding takes no part in matching, and the rest is tried most specific first — `sr_RS@latin` looks for `sr_RS@latin`,
+`sr_RS`, `sr@latin`, `sr`, and then the plain `Name`. This is the spec's list and not a general "try a shorter
+language" rule: `zh_CN` and `zh_TW` are different text and neither stands in for the other. `C`, `POSIX` and an unset
+environment all mean the plain key.
+
+`Icon` is a `localestring` too, and follows the same lookup. `Exec` is not, and does not — a translated command line
+would be a different program.
+
+Labels wrap to two lines, breaking between words where it can. Where a word break would cost the end of the name — as
+it does for "mpv メディアプレイヤー", which has one space and then a run too long for a line — it breaks mid-run
+instead. Showing the whole name is worth more than tidy words. What still does not fit is cut with an ellipsis.
+
 ## The magic carpet
 
 An application launcher is drawn as two layers, as IRIX's Indigo Magic desktop did: a **magic carpet** underneath saying

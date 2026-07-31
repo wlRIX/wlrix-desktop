@@ -213,6 +213,7 @@ mod tests {
         Entry::at(path).unwrap_or(Entry {
             path: path.to_path_buf(),
             name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            label: path.file_name().unwrap().to_string_lossy().into_owned(),
             kind,
             launcher: None,
         })
