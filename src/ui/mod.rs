@@ -674,9 +674,10 @@ impl PointerHandler for Desktop {
             let point = Point::new(event.position.0 as i32, event.position.1 as i32);
             match event.kind {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                    // While a button is held this is a drag; otherwise a hover. Both are
-                    // asked, and each says whether it changed anything worth redrawing.
-                    let dragged = self.selection.motion(point);
+                    // While a button is held this is a drag or a rubber band; otherwise a
+                    // hover. Both are asked, and each says whether anything worth redrawing
+                    // changed.
+                    let dragged = self.selection.motion(&self.placed, point);
                     let hovered = self.selection.hover(&self.placed, point);
                     self.dirty |= dragged || hovered;
                 }
@@ -693,8 +694,15 @@ impl PointerHandler for Desktop {
                 }
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
                     let grid = self.grid();
-                    if let Some(dropped) = self.selection.release(&grid, self.snap_to_grid) {
-                        self.saved.set_spot(&dropped.name, dropped.spot);
+                    // A drop can move several icons at once, when a rubber band selected them
+                    // and one of them was then dragged.
+                    let dropped = self
+                        .selection
+                        .release(&self.placed, &grid, self.snap_to_grid);
+                    if !dropped.is_empty() {
+                        for drop in dropped {
+                            self.saved.set_spot(&drop.name, drop.spot);
+                        }
                         self.relayout();
                     }
                     self.dirty = true;

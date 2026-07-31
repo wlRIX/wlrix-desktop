@@ -49,6 +49,20 @@ impl Rect {
             && point.x < self.x + self.w
             && point.y < self.y + self.h
     }
+
+    /// Whether two rectangles overlap at all.
+    ///
+    /// *Touching* counts, which is what a rubber band wants: dragging one out so its edge just
+    /// reaches an icon should catch it rather than stopping a pixel short. A zero-width or
+    /// zero-height band -- the instant a press begins, before the pointer moves -- therefore
+    /// still touches whatever it started on, which is why a band only ever starts on bare
+    /// desktop.
+    pub fn intersects(&self, other: Rect) -> bool {
+        self.x <= other.x + other.w
+            && other.x <= self.x + self.w
+            && self.y <= other.y + other.h
+            && other.y <= self.y + self.h
+    }
 }
 
 /// How big a cell is and how much room is left around the edges.

@@ -24,6 +24,7 @@ use crate::layout::{Placed, Point};
 use crate::running::Running;
 use crate::select::Selection;
 use crate::theme::font::{Face, Fonts, Run};
+use crate::theme::palette;
 use crate::ui::canvas::{Canvas, Rect};
 use crate::ui::icons::{self, Tint};
 
@@ -83,15 +84,44 @@ pub fn desktop(canvas: &mut Canvas, frame: &mut Frame) {
 
     for item in frame.placed {
         // A dragged icon is drawn under the pointer rather than in its cell, so it follows
-        // the hand instead of jumping there on release.
-        let origin = match (frame.selection.dragging(), frame.selection.drag_origin()) {
-            (Some(name), Some(point)) if name == item.entry.name => point,
-            _ => Point::new(item.rect.x, item.rect.y),
-        };
-        let cell = Rect::new(origin.x, origin.y, item.rect.w, item.rect.h);
+        // the hand instead of jumping there on release. A whole selection moves by the same
+        // delta, which keeps the group rigid.
+        let delta = frame
+            .selection
+            .drag_delta()
+            .filter(|_| frame.selection.is_dragging(&item.entry.name))
+            .unwrap_or(Point::new(0, 0));
+        let cell = Rect::new(
+            item.rect.x + delta.x,
+            item.rect.y + delta.y,
+            item.rect.w,
+            item.rect.h,
+        );
         let tint = tint_for(frame.selection, &item.entry.name);
         icon(canvas, frame, item, cell, tint);
     }
+
+    // The rubber band goes last, over everything: it is a transient marker, not part of the
+    // desktop, and an icon drawn on top of it would look like a hole in the band.
+    if let Some(band) = frame.selection.band() {
+        band_outline(canvas, band);
+    }
+}
+
+/// Draw the rubber band: an unfilled black outline, nothing inside it.
+///
+/// Unfilled on purpose -- a translucent wash would tint every icon it passes over and fight
+/// the hover and selection colors, which are the thing the band is there to change.
+fn band_outline(canvas: &mut Canvas, band: crate::layout::Rect) {
+    // A band with no width or height is the instant before the pointer moves; stroking it
+    // would leave a stray dot on the desktop.
+    if band.w <= 0 || band.h <= 0 {
+        return;
+    }
+    canvas.stroke_rect(
+        Rect::new(band.x, band.y, band.w, band.h),
+        palette::OUTER_LINE,
+    );
 }
 
 /// Whether an application launcher is running, and so which carpet it stands on.
@@ -176,7 +206,7 @@ fn carpet_key(running: bool) -> &'static Path {
 /// Which tint an icon takes. Selection wins over hover: a selected icon under the pointer
 /// should stay yellow rather than flicking to white as the pointer crosses it.
 fn tint_for(selection: &Selection, name: &str) -> Tint {
-    if selection.selected() == Some(name) {
+    if selection.is_selected(name) {
         Tint::Selected
     } else if selection.hovered() == Some(name) {
         Tint::Hover
@@ -563,6 +593,53 @@ mod tests {
     }
 
     #[test]
+    fn the_rubber_band_is_an_unfilled_black_outline() {
+        if Fonts::load().is_err() {
+            return;
+        }
+        let placed = placed(&["a.txt"]);
+        let mut selection = Selection::default();
+        // From bare desktop, well clear of the icon column.
+        selection.press(&placed, Point::new(100, 100), 0);
+        selection.motion(&placed, Point::new(300, 260));
+
+        let mut pixels = paint_with(&placed, &selection);
+        let canvas = Canvas::new(&mut pixels, 1280, 800);
+
+        // The four edges are drawn in the outline color...
+        for (x, y) in [(200, 100), (200, 259), (100, 180), (299, 180)] {
+            assert_eq!(
+                canvas.get(x, y),
+                palette::OUTER_LINE,
+                "the band edge at ({x},{y}) is not the outline colour"
+            );
+        }
+        // ...and the inside is untouched, which is what "unfilled" means.
+        for (x, y) in [(200, 180), (150, 130), (250, 240)] {
+            assert_eq!(
+                canvas.get(x, y),
+                Rgb(0),
+                "({x},{y}) inside the band was painted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_band_that_has_not_moved_paints_nothing() {
+        // The instant a press lands the band is zero-sized; stroking it would leave a dot.
+        if Fonts::load().is_err() {
+            return;
+        }
+        let placed = placed(&["a.txt"]);
+        let mut selection = Selection::default();
+        selection.press(&placed, Point::new(100, 100), 0);
+
+        let mut pixels = paint_with(&placed, &selection);
+        let canvas = Canvas::new(&mut pixels, 1280, 800);
+        assert_eq!(canvas.get(100, 100), Rgb(0), "a stray dot was drawn");
+    }
+
+    #[test]
     fn a_link_entry_keeps_its_drawn_icon() {
         // Only Type=Application has a running state, so a bookmark gets no carpet.
         if Fonts::load().is_err() {
@@ -776,7 +853,7 @@ mod tests {
         let mut selection = Selection::default();
         let start = Point::new(placed[0].rect.x + 8, placed[0].rect.y + 8);
         selection.press(&placed, start, 0);
-        selection.motion(Point::new(start.x - 300, start.y + 200));
+        selection.motion(&placed, Point::new(start.x - 300, start.y + 200));
 
         let mut pixels = vec![0u8; 1280 * 800 * 4];
         let mut canvas = Canvas::new(&mut pixels, 1280, 800);
