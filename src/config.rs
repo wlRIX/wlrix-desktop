@@ -84,6 +84,25 @@ impl MetricsConfig {
     }
 }
 
+/// Parse a candidate config file, for `--check-config`.
+///
+/// This program's own serde types are the authority on what `desktop.toml` may contain.
+/// `wlrix-settings-daemon` writes a temporary file and runs this against it before renaming it
+/// into place, so a settings app cannot produce a file this program would refuse -- which
+/// matters because `deny_unknown_fields` means one wrong key costs the *whole* file and the
+/// user silently gets built-in defaults for all of it.
+///
+/// Deliberately not [`Config::load`]: that reports to stderr and carries on with defaults,
+/// which is right at startup -- a typo should cost the setting, not the desktop -- and exactly
+/// wrong here, where the question *is* whether the file is acceptable.
+pub fn check(path: &std::path::Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| format!("could not read {}: {err}", path.display()))?;
+    toml::from_str::<Config>(&text)
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
 impl Config {
     /// The opener command, falling back to `xdg-open`.
     pub fn open_command(&self) -> Vec<String> {

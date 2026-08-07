@@ -240,6 +240,22 @@ pub fn run() -> Result<(), String> {
         )
         .map_err(|err| format!("could not watch the desktop directory: {err}"))?;
 
+    // Re-read `desktop.toml` on `SIGHUP`, so a settings change applies without restarting the
+    // desktop. `wlrix-settings-daemon` finds this process through the pidfile below; `kill -HUP`
+    // does the same thing by hand.
+    let (reload_ping, reload_source) = calloop::ping::make_ping()
+        .map_err(|err| format!("could not create the reload ping: {err}"))?;
+    loop_handle
+        .insert_source(reload_source, |_, _, desktop: &mut Desktop| {
+            desktop.reload_config();
+        })
+        .map_err(|err| format!("could not watch for reloads: {err}"))?;
+    crate::signals::forward_reload_to_loop(reload_ping);
+
+    // Held until `run` returns, then its guard removes the file -- so a live pidfile means a
+    // live desktop.
+    let _pidfile = crate::pidfile::write();
+
     desktop.rescan();
 
     // The surface needs an output, which arrives from the loop; one dispatch settles the
@@ -298,6 +314,31 @@ impl Desktop {
         self.selection.retain_only(&names);
         self.saved.retain_only(&names);
         self.relayout();
+    }
+
+    /// Re-read `desktop.toml` and apply what changed, on `SIGHUP`.
+    ///
+    /// What `wlrix-settings-daemon` sends after writing a setting, and what `kill -HUP` does by
+    /// hand. A file that no longer parses keeps the running config rather than falling back to
+    /// defaults: the daemon does not signal for a broken file at all, so getting here with one
+    /// means somebody edited it themselves, and taking their whole desktop layout away while
+    /// they are halfway through a sentence would be the wrong answer.
+    ///
+    /// `output` is deliberately not re-applied. Moving the icons to another monitor means
+    /// tearing down the layer surface and building a new one against a different output, which
+    /// is a restart's worth of work for a setting nobody changes twice.
+    fn reload_config(&mut self) {
+        let config = Config::load();
+        self.metrics = config.metrics.resolve();
+        // The live snap setting is the user's, from the state file; the config only ever
+        // supplied its starting value, so a reload must not overrule what they chose.
+        if config.output.as_deref() != self.config.output.as_deref() {
+            eprintln!("wlrix-desktop: [output] changed; that only takes effect on a restart");
+        }
+        self.config = config;
+        self.images.clear();
+        self.relayout();
+        eprintln!("wlrix-desktop: reloaded desktop.toml");
     }
 
     /// Recompute where every icon sits. Called whenever anything feeding it changes: the

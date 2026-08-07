@@ -21,6 +21,7 @@ fn main() {
                      running compositor with wlr-layer-shell.\n\n\
                      Usage: wlrix-desktop [options]\n\n\
                      Options:\n  \
+                       --check-config <path>  say whether that file would be accepted, exit\n  \
                        -h, --help     this message\n  \
                        -V, --version  print the version\n\n\
                      Settings live in ~/.config/wlrix/desktop.toml; icon positions are\n\
@@ -31,6 +32,21 @@ fn main() {
         }
         Some("--version" | "-V") => {
             println!("wlrix-desktop {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        // Answers a question about a file rather than doing anything with it, so it needs no
+        // compositor and starts nothing. `wlrix-settings-daemon` runs this against a candidate
+        // file before renaming it into place, which is what stops a settings app from writing
+        // a `desktop.toml` this program would refuse.
+        Some("--check-config") => {
+            let Some(path) = args.get(1) else {
+                eprintln!("wlrix-desktop: --check-config needs a path");
+                std::process::exit(2);
+            };
+            if let Err(why) = wlrix_desktop::config::check(std::path::Path::new(path)) {
+                eprintln!("{why}");
+                std::process::exit(1);
+            }
             return;
         }
         Some(other) => {
