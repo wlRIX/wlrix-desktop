@@ -136,7 +136,7 @@ same file, and `TryExec`, `Terminal=true` and `Path=` are all honored.
 
 A **wlr-layer-shell surface on the `bottom` layer**, anchored to all four edges and painted with a **transparent**
 background. That puts it below every window but above the `background` layer, which is where the wallpaper lives
-(`swaybg` and friends) — so the wallpaper shows through wherever an icon is not drawn.
+(`wlrix-bg`) — so the wallpaper shows through wherever an icon is not drawn.
 
 Not `background`: two clients sharing a layer have no defined order between them, so a wallpaper restarted after the
 desktop would be composited over the icons.

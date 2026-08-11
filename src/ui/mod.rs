@@ -402,9 +402,9 @@ impl Desktop {
             qh,
             surface,
             // `Bottom`, not `Background`: the background layer belongs to the wallpaper
-            // (`swaybg` and friends), and two clients sharing a layer have no defined order
-            // between them -- restarting the wallpaper would draw it over the icons. Bottom is
-            // still below every window, which is all the desktop needs.
+            // (`wlrix-bg`), and two clients sharing a layer have no defined order between them
+            // -- restarting the wallpaper would draw it over the icons. Bottom is still below
+            // every window, which is all the desktop needs.
             Layer::Bottom,
             Some("wlrix-desktop"),
             Some(&output),

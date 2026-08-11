@@ -1092,7 +1092,7 @@ mod tests {
     #[test]
     fn bare_desktop_is_left_transparent_so_a_wallpaper_shows_through() {
         // The regression: this surface used to be cleared to an opaque gray, which hid
-        // whatever `swaybg` had put on the layer below. Everywhere an icon is not drawn must
+        // whatever `wlrix-bg` had put on the layer below. Everywhere an icon is not drawn must
         // stay fully transparent.
         let Some(mut fonts) = fonts() else { return };
         let mut pixels = vec![0xffu8; 1280 * 800 * 4];

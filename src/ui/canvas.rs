@@ -104,7 +104,7 @@ impl<'a> Canvas<'a> {
     /// Erase the canvas to fully transparent.
     ///
     /// **This is what the desktop clears to**, not a color: the icons sit on a layer surface
-    /// with a wallpaper (`swaybg` and friends) on the layer below, so painting an opaque
+    /// with a wallpaper (`wlrix-bg`) on the layer below, so painting an opaque
     /// background would hide it. Where nothing is drawn, the wallpaper -- or the compositor's
     /// own desktop gray when there is none -- shows through.
     pub fn clear_transparent(&mut self) {
