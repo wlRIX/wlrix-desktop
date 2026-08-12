@@ -51,6 +51,7 @@ use smithay_client_toolkit::{
 };
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
+    backend::WaylandError,
     globals::registry_queue_init,
     protocol::{
         wl_output::WlOutput, wl_pointer::WlPointer, wl_seat::WlSeat, wl_shm, wl_surface::WlSurface,
@@ -90,6 +91,10 @@ pub struct Desktop {
     layer: Option<LayerSurface>,
     /// Which output it is on. Kept so an unplug can be told from any other output going.
     output: Option<WlOutput>,
+    /// Whether the compositor has configured `layer` yet. Attaching a buffer before the first
+    /// configure is acked is a protocol error, which kills the connection -- so a freshly
+    /// created surface is not drawable until this turns true; see `draw_if_dirty`.
+    configured: bool,
     width: u32,
     height: u32,
 
@@ -182,6 +187,7 @@ pub fn run() -> Result<(), String> {
         pool,
         layer: None,
         output: None,
+        configured: false,
         width: 0,
         height: 0,
         pointer: None,
@@ -264,20 +270,29 @@ pub fn run() -> Result<(), String> {
     event_loop
         .dispatch(Duration::from_millis(200), &mut desktop)
         .map_err(|err| format!("initial dispatch failed: {err}"))?;
-    desktop.ensure_surface(&qh2);
+    desktop.ensure_surface(&qh2, None);
 
     loop {
         if let Err(err) = event_loop.dispatch(Duration::from_secs(1), &mut desktop) {
-            // The compositor going away is the ordinary end of a Wayland client's life, not a
-            // failure: logging out from the desktop's own menu looks exactly like this, and
-            // reporting it would put an error in the session log every single time. A
-            // connection that is still usable means something else broke, which is worth
-            // saying.
-            return if health.flush().is_err() {
-                Ok(())
-            } else {
-                Err(format!("event loop failed: {err}"))
+            return match health.flush() {
+                // The compositor going away is the ordinary end of a Wayland client's life,
+                // not a failure: logging out from the desktop's own menu looks exactly like
+                // this, and reporting it would put an error in the session log every single
+                // time.
+                Err(WaylandError::Io(_)) => Ok(()),
+                // A connection that is still usable, or one we broke ourselves, means
+                // something else went wrong -- which is worth saying.
+                _ => Err(format!("event loop failed: {err}")),
             };
+        }
+        // A protocol error is this program's own bug, and it has to be caught here by hand:
+        // `calloop-wayland-source` matches only `WaylandError::Io` on all three of its error
+        // paths, and `EventQueue::dispatch_pending` drops the error outright, so the dispatch
+        // above returns `Ok`. Meanwhile the socket stays readable forever -- the backend
+        // reports its stored error without draining it -- so the loop would spin at 100% of a
+        // core for the rest of the session, silently, with nothing on screen.
+        if let Some(err) = health.protocol_error() {
+            return Err(format!("protocol error: {err}"));
         }
         // Painted after each batch rather than on a frame callback: the desktop redraws on
         // demand -- a hover, a click, a file appearing -- and a frame callback only arrives
@@ -361,8 +376,17 @@ impl Desktop {
     /// one at the origin of the compositor's coordinate space (which is what "leftmost" means
     /// in practice, and matches the compositor's own `space.outputs().next()`), else whatever
     /// came first.
-    fn pick_output(&self) -> Option<WlOutput> {
-        let outputs: Vec<WlOutput> = self.output_state.outputs().collect();
+    ///
+    /// `going` is an output that is on its way out and must not be chosen. `OutputState` drops
+    /// a destroyed output only *after* `output_destroyed` returns, so without this the monitor
+    /// that just went away is still in the list -- and picking it puts the surface on an output
+    /// the compositor has already unmapped, where no configure will ever arrive.
+    fn pick_output(&self, going: Option<&WlOutput>) -> Option<WlOutput> {
+        let outputs: Vec<WlOutput> = self
+            .output_state
+            .outputs()
+            .filter(|output| Some(output) != going)
+            .collect();
         if let Some(wanted) = self.config.output.as_deref() {
             let named = outputs.iter().find(|output| {
                 self.output_state
@@ -389,11 +413,13 @@ impl Desktop {
     }
 
     /// Create the background surface, once there is an output to put it on.
-    fn ensure_surface(&mut self, qh: &QueueHandle<Self>) {
+    ///
+    /// `going` is passed straight to [`Self::pick_output`]; see there.
+    fn ensure_surface(&mut self, qh: &QueueHandle<Self>, going: Option<&WlOutput>) {
         if self.layer.is_some() {
             return;
         }
-        let Some(output) = self.pick_output() else {
+        let Some(output) = self.pick_output(going) else {
             return;
         };
 
@@ -421,6 +447,8 @@ impl Desktop {
 
         self.layer = Some(layer);
         self.output = Some(output);
+        // Nothing may be attached until the compositor answers that commit.
+        self.configured = false;
     }
 
     /// Open the icon called `name`: a launcher runs, anything else goes to the opener.
@@ -615,6 +643,13 @@ impl Desktop {
         if !self.dirty {
             return;
         }
+        // There is nothing to attach to until the compositor has configured the surface, and
+        // attaching anyway is a protocol error that takes the whole connection down with it.
+        // `dirty` deliberately stays set, so the paint happens from `configure` instead of
+        // being dropped on the floor.
+        if !self.configured {
+            return;
+        }
         self.dirty = false;
         self.draw();
     }
@@ -768,8 +803,10 @@ impl OutputHandler for Desktop {
 
     fn new_output(&mut self, _c: &Connection, qh: &QueueHandle<Self>, _o: WlOutput) {
         // A desktop started before the compositor finished enumerating monitors still gets
-        // a surface, as soon as the first one shows up.
-        self.ensure_surface(qh);
+        // a surface, as soon as the first one shows up. This is also the way back from every
+        // monitor going at once: a DisplayPort screen entering power save drops the link, so
+        // the compositor really does destroy the outputs and advertise them again on wake.
+        self.ensure_surface(qh, None);
     }
 
     fn update_output(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _o: WlOutput) {}
@@ -782,9 +819,13 @@ impl OutputHandler for Desktop {
         // unplugging a screen moves the desktop rather than losing it.
         self.layer = None;
         self.output = None;
+        self.configured = false;
         self.width = 0;
         self.height = 0;
-        self.ensure_surface(qh);
+        // Leaving `layer` set to a surface on the departed output would be the end of the
+        // desktop: `ensure_surface` returns early when there is one, so the monitors coming
+        // back would never build a new surface, and the icons would never reappear.
+        self.ensure_surface(qh, Some(&output));
     }
 }
 
@@ -803,16 +844,18 @@ impl LayerShellHandler for Desktop {
         _serial: u32,
     ) {
         let (width, height) = configure.new_size;
-        if (width, height) == (self.width, self.height) {
-            // Still needs a first paint: the surface has no content until one is attached.
-            self.dirty = true;
-            return;
+        // `sctk` acked this on the way in, so the surface is drawable from here on.
+        self.configured = true;
+        if (width, height) != (self.width, self.height) {
+            self.width = width;
+            self.height = height;
+            // The grid depends on the surface size, so a resized screen re-flows the icons --
+            // remembered slots are honored where they still fit, which `arrange` handles.
+            self.relayout();
         }
-        self.width = width;
-        self.height = height;
-        // The grid depends on the surface size, so a resized screen re-flows the icons --
-        // remembered slots are honored where they still fit, which `arrange` handles.
-        self.relayout();
+        // Either way it still needs a paint: the surface has no content until one is attached,
+        // and this is where a paint held back for want of a configure finally gets to run.
+        self.dirty = true;
     }
 }
 
