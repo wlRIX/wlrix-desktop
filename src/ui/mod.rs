@@ -830,9 +830,26 @@ impl OutputHandler for Desktop {
 }
 
 impl LayerShellHandler for Desktop {
-    fn closed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _layer: &LayerSurface) {
-        // The compositor took the surface away; there is nothing left to draw on.
-        self.exit = true;
+    fn closed(&mut self, _c: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
+        // Not the end of the desktop. The compositor closes every layer surface on an output it
+        // is removing, and an output being removed is what a DisplayPort monitor entering power
+        // save looks like -- so exiting here would mean the icons never came back from an idle
+        // blank. Take another output if one is left; if none is, `new_output` picks the desktop
+        // back up when the monitors return.
+        if self.layer.as_ref().map(WaylandSurface::wl_surface) != Some(layer.wl_surface()) {
+            // A surface already replaced, closed on its way out. Nothing to do: acting on it
+            // would tear down the *live* one.
+            return;
+        }
+        // Excluded from the next choice for the same reason as in `output_destroyed`: the
+        // output this surface was on is on its way out, and its global may not have been
+        // withdrawn yet.
+        let going = self.output.take();
+        self.layer = None;
+        self.configured = false;
+        self.width = 0;
+        self.height = 0;
+        self.ensure_surface(qh, going.as_ref());
     }
 
     fn configure(
