@@ -8,22 +8,34 @@
 //! ```sh
 //! cargo run --example band_preview -- ~/Desktop band.pnm        # mid-band
 //! cargo run --example band_preview -- ~/Desktop menu.pnm --menu # menu posted
+//! cargo run --example band_preview -- ~/Desktop g.pnm --palette gotham
 //! ```
 use std::path::PathBuf;
-use wlrix_desktop::image::Images;
+use wlrix_desktop::icon_theme::Icons;
 use wlrix_desktop::layout::{Grid, Metrics, Point, Rect};
 use wlrix_desktop::menu::{Actions, Menu};
 use wlrix_desktop::running::Running;
 use wlrix_desktop::select::Selection;
 use wlrix_desktop::state::State;
-use wlrix_desktop::theme::font::{Face, Fonts};
-use wlrix_desktop::ui::{canvas::Canvas, paint};
+use wlrix_desktop::ui::paint;
+use wlrix_ui::canvas::Canvas;
+use wlrix_ui::text::{Face, Fonts};
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let dir = PathBuf::from(args.next().expect("a desktop directory"));
     let out = args.next().unwrap_or_else(|| "band.pnm".into());
-    let show_menu = args.next().as_deref() == Some("--menu");
+    let rest: Vec<String> = args.collect();
+    let (palette, unknown) = wlrix_ui::palette::resolve(
+        rest.iter()
+            .position(|a| a == "--palette")
+            .and_then(|at| rest.get(at + 1))
+            .map(String::as_str),
+    );
+    if let Some(why) = unknown {
+        eprintln!("{why}");
+    }
+    let show_menu = rest.iter().any(|a| a == "--menu");
     let (w, h) = (900, 560);
 
     let entries = wlrix_desktop::entries::read(&dir);
@@ -71,13 +83,14 @@ fn main() {
         selection.release(&placed, &grid, false);
     }
 
-    let mut images = Images::default();
+    let mut images = Icons::default();
     let mut pixels = vec![0u8; (w * h * 4) as usize];
     {
         let mut canvas = Canvas::new(&mut pixels, w, h);
         paint::desktop(
             &mut canvas,
             &mut paint::Frame {
+                palette,
                 fonts: &mut fonts,
                 images: &mut images,
                 placed: &placed,
@@ -88,12 +101,17 @@ fn main() {
             },
         );
     }
-    // Composite over the desktop gray so the transparent parts are visible.
+    // Composite over the desktop color so the transparent parts are visible. From the
+    // palette, not a literal: the desktop paints nothing there itself -- `wlrix-bg` and the
+    // compositor's clear color are underneath -- and a hardcoded gray would make every
+    // scheme's preview claim the same background.
+    let (dr, dg, db) = palette.desktop.channels();
     let mut pnm = format!("P6\n{w} {h}\n255\n").into_bytes();
-    for px in pixels.chunks_exact(4) {
+    for px in pixels.as_chunks::<4>().0 {
         let a = px[3] as u32;
-        let over = |c: u8| ((c as u32 * 255 + 0x55 * (255 - a)) / 255).min(255) as u8;
-        pnm.extend_from_slice(&[over(px[2]), over(px[1]), over(px[0])]);
+        let over =
+            |c: u8, under: u8| ((c as u32 * 255 + under as u32 * (255 - a)) / 255).min(255) as u8;
+        pnm.extend_from_slice(&[over(px[2], dr), over(px[1], dg), over(px[0], db)]);
     }
     std::fs::write(&out, pnm).expect("write");
     println!(

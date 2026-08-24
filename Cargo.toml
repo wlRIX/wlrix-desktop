@@ -15,9 +15,13 @@ wayland-client = "0.31"
 # The event loop. Wayland events, the inotify watch on the desktop directory, and the
 # deferred state save are all sources on one loop.
 calloop = "0.13"
-# Icon labels: shaping plus system-font fallback, so a CJK or RTL filename renders. Same
-# version the greeter and the compositor use, for one font stack across wlRIX.
-cosmic-text = "0.12"
+# The shared UI crate: the canvas, the Motif bevel, the fonts, the coverage mask, the image
+# decoder and the palette. Pinned by rev rather than taken by path, so this repo still builds
+# from a fresh standalone clone -- the same shape as the smithay pin in `wlrix-compositor`.
+# `just link-ui` in `wlrix-epoch` patches in a sibling checkout while working on both sides.
+#
+# `image` is not in its default features: it pulls resvg, which only this component needs.
+wlrix-ui = { git = "https://github.com/wlRIX/wlrix-ui", rev = "33c693db461331cf183fb4e5090fb5c6be71a6f5", features = ["image"] }
 # `fs::inotify` for watching the desktop directory. Already in the dependency tree via
 # calloop and smithay-client-toolkit, so this costs nothing new.
 rustix = { version = "1", features = ["fs"] }
@@ -26,18 +30,10 @@ rustix = { version = "1", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 libc = "0.2"
-# Rasterizing icons. The magic carpet is SVG, and so is most of what a modern icon theme
-# ships -- `Icon=Alacritty` resolves to `/usr/share/pixmaps/Alacritty.svg` on this machine.
-# `raster-images` is off: PNG is decoded directly (below), and the rest of that feature is
-# GIF/JPEG/WebP support for `<image>` elements, which an icon has no business containing.
-resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts"] }
 # Resolving an `Icon=` name to a file: index.theme parsing, theme inheritance, size and scale
 # directories, and the `/usr/share/pixmaps` fallback. All of that is the icon-theme spec, and
 # reimplementing it to get the awkward cases wrong would be a poor trade.
 freedesktop-icons = "0.4.0"
-# Themes still ship plenty of PNG. Decoding it directly rather than through `image` keeps the
-# dependency to the one format that actually turns up.
-png = "0.18"
 # `ext-foreign-toplevel-list-v1`, for knowing which applications have a window open -- which is
 # what decides whether a launcher's magic carpet is drawn open or closed. The compositor
 # advertises it; smithay-client-toolkit does not wrap it, so the bindings come from here.

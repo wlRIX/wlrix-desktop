@@ -6,6 +6,9 @@
 //! snap_to_grid = false    # icons drop where released; true aligns them to cells
 //! output = "DP-1"         # which monitor gets the icons; default is the leftmost
 //!
+//! [appearance]
+//! palette = "gotham"      # the colour scheme; default is "classic"
+//!
 //! [metrics]
 //! icon = 64               # the icon artwork, square
 //! cell_width = 96         # one cell: the icon plus its label
@@ -51,6 +54,27 @@ pub struct Config {
     pub terminal: Vec<String>,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub appearance: AppearanceConfig,
+}
+
+/// Which color scheme to draw in.
+///
+/// Its own section rather than a bare key, because a scheme is not the only thing that will
+/// ever go here -- and because it is the same section name the compositor uses, so the two
+/// files read alike.
+///
+/// Deliberately *not* a settings-daemon key yet. One scheme has to reach the compositor, the
+/// desktop and the applications at once, and the daemon ties a key to a single owner to
+/// signal; giving it more than one is its own change.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppearanceConfig {
+    /// A scheme id from `wlrix-ui`: `classic`, `classic-g10`, `classic-g24`, `gotham`.
+    /// Absent, empty, or unrecognized means the default, with a line in the log for the last
+    /// of those -- a mistyped scheme name must not leave the desktop unpainted.
+    #[serde(default)]
+    pub palette: Option<String>,
 }
 
 /// Cell geometry. Every field is optional and falls back to [`Metrics::default`], so a file

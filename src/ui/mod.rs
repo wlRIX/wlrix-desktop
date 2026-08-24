@@ -19,9 +19,7 @@
 //! directory are both sources on one loop, so a file appearing and a pointer moving arrive the
 //! same way and nothing polls.
 
-pub mod canvas;
 pub mod icons;
-pub mod motif;
 pub mod paint;
 
 use std::path::PathBuf;
@@ -64,14 +62,16 @@ use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
 
 use crate::config::Config;
 use crate::entries::Entry;
-use crate::image::Images;
+use crate::icon_theme::Icons;
 use crate::layout::{Grid, Metrics, Placed, Point, Rect};
 use crate::menu::{Action, Actions as MenuActions, Menu};
 use crate::running::Running;
 use crate::select::Selection;
 use crate::state::State;
-use crate::theme::font::{Face, Fonts};
 use crate::watch::Watch;
+use wlrix_ui::canvas::Canvas;
+use wlrix_ui::palette::Palette;
+use wlrix_ui::text::{Face, Fonts};
 
 /// `wl_pointer`'s buttons, from `linux/input-event-codes.h`.
 const BTN_LEFT: u32 = 0x110;
@@ -104,12 +104,15 @@ pub struct Desktop {
     directory: PathBuf,
     watch: Watch,
     config: Config,
+    /// The color scheme everything is drawn in, resolved from `config` at load and on every
+    /// reload. `&'static`, because every scheme is baked into `wlrix-ui`.
+    palette: &'static Palette,
     metrics: Metrics,
     saved: State,
     snap_to_grid: bool,
 
     /// Decoded icon artwork, cached across frames.
-    images: Images,
+    images: Icons,
     /// Which applications have a window open, for the magic carpet's state.
     running: Running,
 
@@ -194,11 +197,12 @@ pub fn run() -> Result<(), String> {
         fonts,
         directory,
         watch,
+        palette: resolve_palette(&config),
         config,
         metrics,
         saved,
         snap_to_grid,
-        images: Images::default(),
+        images: Icons::default(),
         running: Running::default(),
         entries: Vec::new(),
         placed: Vec::new(),
@@ -345,12 +349,23 @@ impl Desktop {
     fn reload_config(&mut self) {
         let config = Config::load();
         self.metrics = config.metrics.resolve();
+        // Only when it actually changed: a `SIGHUP` for an unrelated setting -- which is most
+        // of them -- should not repaint, and comparing the resolved scheme rather than the
+        // configured string means correcting a typo to the name of the scheme already showing
+        // is correctly a no-op.
+        let palette = resolve_palette(&config);
+        if palette != self.palette {
+            eprintln!("wlrix-desktop: palette is now {}", palette.id);
+            self.palette = palette;
+        }
         // The live snap setting is the user's, from the state file; the config only ever
         // supplied its starting value, so a reload must not overrule what they chose.
         if config.output.as_deref() != self.config.output.as_deref() {
             eprintln!("wlrix-desktop: [output] changed; that only takes effect on a restart");
         }
         self.config = config;
+        // The image cache holds *un-tinted* decodes and the tint is applied per draw, so a
+        // palette change does not invalidate it. This clear is for the icon size.
         self.images.clear();
         self.relayout();
         eprintln!("wlrix-desktop: reloaded desktop.toml");
@@ -674,10 +689,11 @@ impl Desktop {
             }
         };
 
-        let mut canvas = canvas::Canvas::new(pixels, width as i32, height as i32);
+        let mut canvas = Canvas::new(pixels, width as i32, height as i32);
         paint::desktop(
             &mut canvas,
             &mut paint::Frame {
+                palette: self.palette,
                 fonts: &mut self.fonts,
                 images: &mut self.images,
                 placed: &self.placed,
@@ -1015,3 +1031,15 @@ delegate_seat!(Desktop);
 delegate_pointer!(Desktop);
 delegate_layer!(Desktop);
 delegate_registry!(Desktop);
+
+/// The scheme `config` names, or the default if it names nothing this build ships.
+///
+/// Never fails. A desktop that refused to start over a misspelled scheme name would be a
+/// worse answer than a desktop in the wrong colors.
+fn resolve_palette(config: &Config) -> &'static Palette {
+    let (palette, unknown) = wlrix_ui::palette::resolve(config.appearance.palette.as_deref());
+    if let Some(why) = unknown {
+        eprintln!("wlrix-desktop: {why}; using {}", palette.id);
+    }
+    palette
+}

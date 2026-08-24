@@ -7,7 +7,7 @@
 pub mod config;
 pub mod desktop_entry;
 pub mod entries;
-pub mod image;
+pub mod icon_theme;
 pub mod layout;
 pub mod locale;
 pub mod menu;
@@ -18,7 +18,6 @@ pub mod select;
 pub mod session;
 pub mod signals;
 pub mod state;
-pub mod theme;
 pub mod trash;
 pub mod ui;
 pub mod watch;

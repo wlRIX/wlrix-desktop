@@ -19,16 +19,17 @@
 use std::path::Path;
 
 use crate::entries::Entry;
-use crate::image::Images;
+use crate::icon_theme::Icons;
 use crate::layout::{Placed, Point};
 use crate::menu::Menu;
 use crate::running::Running;
 use crate::select::Selection;
-use crate::theme::font::{Face, Fonts, Run};
-use crate::theme::palette;
-use crate::ui::canvas::{Canvas, Rect};
+use wlrix_ui::text::{Face, Fonts, Run};
+
 use crate::ui::icons::{self, Tint};
-use crate::ui::motif;
+use wlrix_ui::canvas::{Canvas, Rect};
+use wlrix_ui::motif;
+use wlrix_ui::palette::Palette;
 
 /// Label text size, in pixels.
 const LABEL_PX: f32 = 12.0;
@@ -64,8 +65,11 @@ const CARPET_OPEN: &[u8] = include_bytes!("../../assets/generic.exec.open.svg");
 /// A struct rather than eight arguments, and it keeps the borrow of each piece explicit -- the
 /// image cache in particular has to be mutable, since drawing is what fills it.
 pub struct Frame<'a> {
+    /// The scheme everything is drawn in. `&'static`, so this struct keeps the one lifetime
+    /// it already had.
+    pub palette: &'static Palette,
     pub fonts: &'a mut Fonts,
-    pub images: &'a mut Images,
+    pub images: &'a mut Icons,
     pub placed: &'a [Placed],
     pub selection: &'a Selection,
     /// Which applications have a window open. Empty is a perfectly good answer -- it means
@@ -108,12 +112,12 @@ pub fn desktop(canvas: &mut Canvas, frame: &mut Frame) {
     // The rubber band goes last, over everything: it is a transient marker, not part of the
     // desktop, and an icon drawn on top of it would look like a hole in the band.
     if let Some(band) = frame.selection.band() {
-        band_outline(canvas, band);
+        band_outline(canvas, frame.palette, band);
     }
 
     // The menu is above even that: it is chrome laid over the desktop, not on it.
     if let Some(menu) = frame.menu {
-        self::menu(canvas, frame.fonts, menu);
+        self::menu(canvas, frame.palette, frame.fonts, menu);
     }
 }
 
@@ -122,15 +126,15 @@ pub fn desktop(canvas: &mut Canvas, frame: &mut Frame) {
 /// The geometry and the colors are the compositor's window menu
 /// (`wlrix-compositor/src/{menu,decoration}.rs`), because the two are the same object as far
 /// as the user is concerned.
-fn menu(canvas: &mut Canvas, fonts: &mut Fonts, menu: &Menu) {
+fn menu(canvas: &mut Canvas, palette: &Palette, fonts: &mut Fonts, menu: &Menu) {
     let panel = menu.panel();
     motif::panel(
         canvas,
         Rect::new(panel.x, panel.y, panel.w, panel.h),
-        palette::FACE,
+        palette.face,
         motif::Bevel::raised(
-            palette::FACE_TOP_SHADOW,
-            palette::FACE_BOTTOM_SHADOW,
+            palette.face_top_shadow,
+            palette.face_bottom_shadow,
             crate::menu::BEVEL,
         ),
     );
@@ -143,7 +147,12 @@ fn menu(canvas: &mut Canvas, fonts: &mut Fonts, menu: &Menu) {
         let row = Rect::new(row.x, row.y, row.w, row.h);
 
         if entry.is_separator() {
-            groove(canvas, row);
+            motif::groove(
+                canvas,
+                row,
+                palette.face_top_shadow,
+                palette.face_bottom_shadow,
+            );
             continue;
         }
 
@@ -152,10 +161,10 @@ fn menu(canvas: &mut Canvas, fonts: &mut Fonts, menu: &Menu) {
             motif::panel(
                 canvas,
                 row,
-                palette::MENU_HIGHLIGHT,
+                palette.title_active,
                 motif::Bevel::raised(
-                    palette::FACE_TOP_SHADOW,
-                    palette::FACE_BOTTOM_SHADOW,
+                    palette.face_top_shadow,
+                    palette.face_bottom_shadow,
                     crate::menu::BEVEL,
                 ),
             );
@@ -163,17 +172,14 @@ fn menu(canvas: &mut Canvas, fonts: &mut Fonts, menu: &Menu) {
 
         let baseline = row.y + (row.h - line) / 2 + ascent;
         let width = fonts.width(Face::Bold, crate::menu::LABEL_PX, &entry.label);
-        let (x, colour) = if entry.is_header() {
+        let (x, color) = if entry.is_header() {
             // The title is centred; everything else is left-aligned at the label inset.
-            ((row.x + (row.w - width) / 2), palette::FOREGROUND)
+            ((row.x + (row.w - width) / 2), palette.foreground)
         } else if entry.enabled {
-            (row.x + crate::menu::LABEL_INSET, palette::FOREGROUND)
+            (row.x + crate::menu::LABEL_INSET, palette.foreground)
         } else {
             // Disabled rows take the bottom shadow, which is how Motif greys a label out.
-            (
-                row.x + crate::menu::LABEL_INSET,
-                palette::FACE_BOTTOM_SHADOW,
-            )
+            (row.x + crate::menu::LABEL_INSET, palette.face_bottom_shadow)
         };
         fonts.draw(
             canvas,
@@ -182,30 +188,28 @@ fn menu(canvas: &mut Canvas, fonts: &mut Fonts, menu: &Menu) {
                 px: crate::menu::LABEL_PX,
                 x,
                 baseline,
-                colour,
+                color,
             },
             &entry.label,
         );
 
         // The header is closed off with a groove, as the IRIX menu had.
         if entry.is_header() {
-            groove(canvas, Rect::new(row.x, row.y + row.h - 2, row.w, 2));
+            motif::groove(
+                canvas,
+                Rect::new(row.x, row.y + row.h - 2, row.w, 2),
+                palette.face_top_shadow,
+                palette.face_bottom_shadow,
+            );
         }
     }
-}
-
-/// An etched groove across `row`: a dark line over a light one, Motif-style.
-fn groove(canvas: &mut Canvas, row: Rect) {
-    let y = row.y + row.h / 2 - 1;
-    canvas.fill_rect(Rect::new(row.x, y, row.w, 1), palette::FACE_BOTTOM_SHADOW);
-    canvas.fill_rect(Rect::new(row.x, y + 1, row.w, 1), palette::FACE_TOP_SHADOW);
 }
 
 /// Draw the rubber band: an unfilled black outline, nothing inside it.
 ///
 /// Unfilled on purpose -- a translucent wash would tint every icon it passes over and fight
 /// the hover and selection colors, which are the thing the band is there to change.
-fn band_outline(canvas: &mut Canvas, band: crate::layout::Rect) {
+fn band_outline(canvas: &mut Canvas, palette: &Palette, band: crate::layout::Rect) {
     // A band with no width or height is the instant before the pointer moves; stroking it
     // would leave a stray dot on the desktop.
     if band.w <= 0 || band.h <= 0 {
@@ -213,7 +217,7 @@ fn band_outline(canvas: &mut Canvas, band: crate::layout::Rect) {
     }
     canvas.stroke_rect(
         Rect::new(band.x, band.y, band.w, band.h),
-        palette::OUTER_LINE,
+        palette.outer_line,
     );
 }
 
@@ -257,7 +261,7 @@ fn application(
         return false;
     };
     carpet
-        .multiplied(tint.colour())
+        .multiplied(tint.color(frame.palette))
         .draw(canvas, square.x, square.y);
 
     // `X-WLRIX-Running-Icon` replaces `Icon` while the application is up -- IRIX let an
@@ -330,11 +334,12 @@ fn icon(canvas: &mut Canvas, frame: &mut Frame, item: &Placed, cell: Rect, tint:
             tint,
         );
     if !drawn {
-        icons::draw(canvas, square, item.entry.kind, tint);
+        icons::draw(canvas, frame.palette, square, item.entry.kind, tint);
     }
 
     label(
         canvas,
+        frame.palette,
         frame.fonts,
         &item.entry.label,
         Rect::new(
@@ -347,8 +352,23 @@ fn icon(canvas: &mut Canvas, frame: &mut Frame, item: &Placed, cell: Rect, tint:
     );
 }
 
+/// Wrap a filename to the label's face and size.
+///
+/// The algorithm is [`wlrix_ui::text::wrap`]; this only supplies the two constants that make
+/// it the *desktop's* wrapping rather than anyone else's.
+fn wrap(fonts: &mut Fonts, name: &str, width: i32, max_lines: usize) -> Vec<String> {
+    wlrix_ui::text::wrap(fonts, Face::Regular, LABEL_PX, name, width, max_lines)
+}
+
 /// Draw a filename under its icon, wrapped and centred.
-fn label(canvas: &mut Canvas, fonts: &mut Fonts, name: &str, area: Rect, tint: Tint) {
+fn label(
+    canvas: &mut Canvas,
+    palette: &Palette,
+    fonts: &mut Fonts,
+    name: &str,
+    area: Rect,
+    tint: Tint,
+) {
     if area.h <= 0 || area.w <= 0 {
         return;
     }
@@ -379,7 +399,7 @@ fn label(canvas: &mut Canvas, fonts: &mut Fonts, name: &str, area: Rect, tint: T
                 widest + 2 * LABEL_PAD,
                 height,
             ),
-            tint.colour(),
+            tint.color(palette),
         );
     }
 
@@ -397,91 +417,11 @@ fn label(canvas: &mut Canvas, fonts: &mut Fonts, name: &str, area: Rect, tint: T
                 px: LABEL_PX,
                 x: area.x + (area.w - width) / 2,
                 baseline: top + ascent,
-                colour: tint.label_colour(),
+                color: tint.label_color(palette),
             },
             line,
         );
     }
-}
-
-/// Break a label into at most `max_lines` lines that fit `width`.
-///
-/// Prefers to break between words, so a launcher's `Name` does not read as "mpv Media Play /
-/// er" -- but **only when that does not cost the end of the name**. Tidy words are worth less
-/// than the whole label: "mpv メディアプレイヤー" breaks after "mpv" if it is allowed to, which
-/// leaves a nearly empty first line and a second too wide to fit, so it falls back to breaking
-/// mid-run and shows everything. Filenames go the same way, having no word boundary to find.
-///
-/// A name too long for the lines available either way is cut and given an ellipsis, since a
-/// label that overflowed its cell would collide with its neighbor.
-fn wrap(fonts: &mut Fonts, name: &str, width: i32, max_lines: usize) -> Vec<String> {
-    if width <= 0 || max_lines == 0 {
-        return Vec::new();
-    }
-    if fonts.width(Face::Regular, LABEL_PX, name) <= width {
-        return vec![name.to_owned()];
-    }
-
-    let (words, words_cut) = break_lines(fonts, name, width, max_lines, true);
-    if !words_cut {
-        return words;
-    }
-    // Breaking at spaces lost the end of the name. Try again without them, and take whichever
-    // shows more -- if both are cut, the tidier one wins.
-    let (characters, characters_cut) = break_lines(fonts, name, width, max_lines, false);
-    if characters_cut { words } else { characters }
-}
-
-/// One wrapping pass. Returns the lines, and whether text had to be dropped to fit them.
-fn break_lines(
-    fonts: &mut Fonts,
-    name: &str,
-    width: i32,
-    max_lines: usize,
-    at_spaces: bool,
-) -> (Vec<String>, bool) {
-    let mut lines: Vec<String> = Vec::new();
-    let mut line = String::new();
-    // By `char`, so a multi-byte character is never split down the middle.
-    for character in name.chars() {
-        let mut candidate = line.clone();
-        candidate.push(character);
-        if fonts.width(Face::Regular, LABEL_PX, &candidate) > width && !line.is_empty() {
-            // A space at the very start is no use to break at -- it would push an empty line
-            // and lose a whole row to nothing.
-            let at = at_spaces
-                .then(|| line.rfind(' '))
-                .flatten()
-                .filter(|at| *at > 0);
-            let (head, rest) = match at {
-                // The space itself is dropped: it did its job by being the break.
-                Some(at) => (line[..at].to_owned(), line[at + 1..].to_owned()),
-                None => (std::mem::take(&mut line), String::new()),
-            };
-            lines.push(head);
-            // Whatever was after the space starts the next line rather than being lost.
-            line = rest;
-            if lines.len() == max_lines {
-                break;
-            }
-        }
-        line.push(character);
-    }
-
-    if lines.len() < max_lines && !line.is_empty() {
-        lines.push(line);
-        return (lines, false);
-    }
-
-    // Ran out of lines with text still to place: mark the last one as cut.
-    if let Some(last) = lines.last_mut() {
-        while !last.is_empty() && fonts.width(Face::Regular, LABEL_PX, &format!("{last}…")) > width
-        {
-            last.pop();
-        }
-        last.push('…');
-    }
-    (lines, true)
 }
 
 #[cfg(test)]
@@ -490,7 +430,7 @@ mod tests {
     use crate::entries::{Entry, Kind};
     use crate::layout::{Grid, Metrics, Rect as LayoutRect, Spot};
     use crate::menu::Menu;
-    use crate::theme::Rgb;
+    use wlrix_ui::Rgb;
 
     /// Font loading needs a system font database, which a build machine may not have. Every
     /// test here skips rather than fails in that case -- the drawing is verified on a real
@@ -507,9 +447,10 @@ mod tests {
     ) -> Frame<'a> {
         // Leaked so the borrow lives as long as the frame does; these are test-lifetime
         // allocations in a process that is about to exit.
-        let images: &'a mut Images = Box::leak(Box::new(Images::default()));
+        let images: &'a mut Icons = Box::leak(Box::new(Icons::default()));
         let running: &'a Running = Box::leak(Box::new(Running::default()));
         Frame {
+            palette: wlrix_ui::palette::DEFAULT,
             fonts,
             images,
             placed,
@@ -568,13 +509,14 @@ mod tests {
     /// Paint one launcher, with `running` deciding the carpet, and hand back the buffer.
     fn paint_launcher(placed: &[Placed], running: &Running) -> Vec<u8> {
         let mut fonts = Fonts::load().expect("fonts");
-        let mut images = Images::default();
+        let mut images = Icons::default();
         let mut pixels = vec![0u8; 1280 * 800 * 4];
         {
             let mut canvas = Canvas::new(&mut pixels, 1280, 800);
             desktop(
                 &mut canvas,
                 &mut Frame {
+                    palette: wlrix_ui::palette::DEFAULT,
                     fonts: &mut fonts,
                     images: &mut images,
                     placed,
@@ -707,7 +649,7 @@ mod tests {
     /// Paint one launcher with a given selection and nothing running.
     fn paint_with(placed: &[Placed], selection: &Selection) -> Vec<u8> {
         let mut fonts = Fonts::load().expect("fonts");
-        let mut images = Images::default();
+        let mut images = Icons::default();
         let running = Running::default();
         let mut pixels = vec![0u8; 1280 * 800 * 4];
         {
@@ -715,6 +657,7 @@ mod tests {
             desktop(
                 &mut canvas,
                 &mut Frame {
+                    palette: wlrix_ui::palette::DEFAULT,
                     fonts: &mut fonts,
                     images: &mut images,
                     placed,
@@ -746,8 +689,8 @@ mod tests {
         for (x, y) in [(200, 100), (200, 259), (100, 180), (299, 180)] {
             assert_eq!(
                 canvas.get(x, y),
-                palette::OUTER_LINE,
-                "the band edge at ({x},{y}) is not the outline colour"
+                wlrix_ui::palette::DEFAULT.outer_line,
+                "the band edge at ({x},{y}) is not the outline color"
             );
         }
         // ...and the inside is untouched, which is what "unfilled" means.
@@ -790,13 +733,14 @@ mod tests {
             |label| fonts.width(Face::Bold, crate::menu::LABEL_PX, label),
         );
 
-        let mut images = Images::default();
+        let mut images = Icons::default();
         let mut pixels = vec![0u8; 1280 * 800 * 4];
         {
             let mut canvas = Canvas::new(&mut pixels, 1280, 800);
             desktop(
                 &mut canvas,
                 &mut Frame {
+                    palette: wlrix_ui::palette::DEFAULT,
                     fonts: &mut fonts,
                     images: &mut images,
                     placed: &placed,
@@ -848,13 +792,14 @@ mod tests {
         let row = menu.row(log_out);
         menu.hover(Point::new(row.x + row.w / 2, row.y + row.h / 2));
 
-        let mut images = Images::default();
+        let mut images = Icons::default();
         let mut pixels = vec![0u8; 1280 * 800 * 4];
         {
             let mut canvas = Canvas::new(&mut pixels, 1280, 800);
             desktop(
                 &mut canvas,
                 &mut Frame {
+                    palette: wlrix_ui::palette::DEFAULT,
                     fonts: &mut fonts,
                     images: &mut images,
                     placed: &placed,
@@ -874,13 +819,13 @@ mod tests {
             (row.x + row.w - 6, row.y + row.h / 2)
         };
         let (x, y) = inside(log_out);
-        assert_eq!(canvas.get(x, y), palette::MENU_HIGHLIGHT);
+        assert_eq!(canvas.get(x, y), wlrix_ui::palette::DEFAULT.title_active);
 
         let open = row_of(&menu, "Open");
         let (x, y) = inside(open);
         assert_eq!(
             canvas.get(x, y),
-            palette::FACE,
+            wlrix_ui::palette::DEFAULT.face,
             "a disabled row must not highlight"
         );
     }

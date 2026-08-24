@@ -1429,17 +1429,24 @@ name = "wlrix-desktop"
 version = "0.1.0"
 dependencies = [
  "calloop",
- "cosmic-text",
  "freedesktop-icons",
  "libc",
- "png",
- "resvg",
  "rustix 1.1.4",
  "serde",
  "smithay-client-toolkit",
  "toml",
  "wayland-client",
  "wayland-protocols",
+ "wlrix-ui",
+]
+
+[[package]]
+name = "wlrix-ui"
+version = "0.1.0"
+dependencies = [
+ "cosmic-text",
+ "png",
+ "resvg",
 ]
 
 [[package]]
