@@ -121,7 +121,7 @@ pub fn desktop(canvas: &mut Canvas, frame: &mut Frame) {
     }
 }
 
-/// Draw the desktop menu: a raised panel, a centred title, and the rows.
+/// Draw the desktop menu: a raised panel, a centered title, and the rows.
 ///
 /// The geometry and the colors are the compositor's window menu
 /// (`wlrix-compositor/src/{menu,decoration}.rs`), because the two are the same object as far
@@ -173,12 +173,12 @@ fn menu(canvas: &mut Canvas, palette: &Palette, fonts: &mut Fonts, menu: &Menu) 
         let baseline = row.y + (row.h - line) / 2 + ascent;
         let width = fonts.width(Face::Bold, crate::menu::LABEL_PX, &entry.label);
         let (x, color) = if entry.is_header() {
-            // The title is centred; everything else is left-aligned at the label inset.
+            // The title is centered; everything else is left-aligned at the label inset.
             ((row.x + (row.w - width) / 2), palette.foreground)
         } else if entry.enabled {
             (row.x + crate::menu::LABEL_INSET, palette.foreground)
         } else {
-            // Disabled rows take the bottom shadow, which is how Motif greys a label out.
+            // Disabled rows take the bottom shadow, which is how Motif grays a label out.
             (row.x + crate::menu::LABEL_INSET, palette.face_bottom_shadow)
         };
         fonts.draw(
@@ -314,7 +314,7 @@ fn tint_for(selection: &Selection, name: &str) -> Tint {
 
 /// Draw one icon and its label inside `cell`.
 fn icon(canvas: &mut Canvas, frame: &mut Frame, item: &Placed, cell: Rect, tint: Tint) {
-    // The icon square, centred across the cell and hard against its top.
+    // The icon square, centered across the cell and hard against its top.
     let size = frame.icon_size.min(cell.w).min(cell.h);
     let square = Rect::new(cell.x + (cell.w - size) / 2, cell.y, size, size);
 
@@ -360,7 +360,7 @@ fn wrap(fonts: &mut Fonts, name: &str, width: i32, max_lines: usize) -> Vec<Stri
     wlrix_ui::text::wrap(fonts, Face::Regular, LABEL_PX, name, width, max_lines)
 }
 
-/// Draw a filename under its icon, wrapped and centred.
+/// Draw a filename under its icon, wrapped and centered.
 fn label(
     canvas: &mut Canvas,
     palette: &Palette,

@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn a_launcher_is_labelled_with_its_name_not_its_file_name() {
+    fn a_launcher_is_labeled_with_its_name_not_its_file_name() {
         let dir = scratch("labels");
         fs::write(
             dir.join("mpv.desktop"),

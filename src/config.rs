@@ -7,7 +7,7 @@
 //! output = "DP-1"         # which monitor gets the icons; default is the leftmost
 //!
 //! [appearance]
-//! palette = "gotham"      # the colour scheme; default is "classic"
+//! palette = "gotham"      # the color scheme; default is "classic"
 //!
 //! [metrics]
 //! icon = 64               # the icon artwork, square

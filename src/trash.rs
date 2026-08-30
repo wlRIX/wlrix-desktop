@@ -186,7 +186,7 @@ mod tests {
 
     /// Run `body` with `XDG_DATA_HOME` pointed at `dir`.
     ///
-    /// Serialised: the environment is process-wide, and two tests setting it at once would
+    /// Serialized: the environment is process-wide, and two tests setting it at once would
     /// each see the other's value.
     fn with_data_home<T>(dir: &Path, body: impl FnOnce() -> T) -> T {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

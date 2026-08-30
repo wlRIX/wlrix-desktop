@@ -6,7 +6,7 @@
 //! geometry, as the compositor's window menu (`wlrix-compositor/src/menu.rs`) -- the two menus
 //! are the same object in the user's eyes and should not drift apart.
 //!
-//! Unlike the window menu this one has a **header**: a centred "Desktop" title with a groove
+//! Unlike the window menu this one has a **header**: a centered "Desktop" title with a groove
 //! under it, as IRIX's did.
 //!
 //! Which items can be chosen depends on the selection, and the enabled flags are worked out
@@ -126,7 +126,7 @@ impl Entry {
         }
     }
 
-    /// Whether this row is the title, drawn centred with a groove beneath it.
+    /// Whether this row is the title, drawn centered with a groove beneath it.
     pub fn is_header(&self) -> bool {
         self.kind == Kind::Header
     }
@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_starts_with_a_centred_header() {
+    fn the_menu_starts_with_a_centered_header() {
         let menu = menu(0);
         assert!(menu.entries[0].is_header());
         assert_eq!(menu.entries[0].label, "Desktop");

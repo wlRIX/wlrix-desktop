@@ -228,7 +228,7 @@ mod tests {
                 }
             }
         }
-        assert!(hits > 0, "nothing was drawn in the tint colour");
+        assert!(hits > 0, "nothing was drawn in the tint color");
     }
 
     #[test]

@@ -326,11 +326,11 @@ impl Selection {
                     // Snap by the cell's center, not its corner: dropping an icon so it mostly
                     // covers a cell should choose that cell. Each icon in a group snaps to its
                     // own nearest cell, and `layout::arrange` rehomes any that collide.
-                    let centre = Point::new(
+                    let center = Point::new(
                         origin.x + grid.metrics.cell_w / 2,
                         origin.y + grid.metrics.cell_h / 2,
                     );
-                    Spot::Slot(grid.nearest_slot(centre))
+                    Spot::Slot(grid.nearest_slot(center))
                 } else {
                     Spot::Free(grid.clamp(origin))
                 };
@@ -390,7 +390,7 @@ mod tests {
         selection.press(placed, point, time)
     }
 
-    fn centre(item: &Placed) -> Point {
+    fn center(item: &Placed) -> Point {
         Point::new(item.rect.x + item.rect.w / 2, item.rect.y + item.rect.h / 2)
     }
 
@@ -399,12 +399,12 @@ mod tests {
         let placed = placed(&["a", "b"]);
         let mut selection = Selection::default();
 
-        assert!(selection.hover(&placed, centre(&placed[0])));
+        assert!(selection.hover(&placed, center(&placed[0])));
         assert_eq!(selection.hovered(), Some("a"));
         // Same icon again is not a change, so nothing redraws.
-        assert!(!selection.hover(&placed, centre(&placed[0])));
+        assert!(!selection.hover(&placed, center(&placed[0])));
 
-        assert!(selection.hover(&placed, centre(&placed[1])));
+        assert!(selection.hover(&placed, center(&placed[1])));
         assert_eq!(selection.hovered(), Some("b"));
 
         // Bare desktop.
@@ -417,11 +417,11 @@ mod tests {
         let placed = placed(&["a", "b"]);
         let mut selection = Selection::default();
 
-        press(&mut selection, &placed, centre(&placed[0]));
+        press(&mut selection, &placed, center(&placed[0]));
         assert!(selection.is_selected("a"));
         selection.release(&placed, &grid(), false);
 
-        press(&mut selection, &placed, centre(&placed[1]));
+        press(&mut selection, &placed, center(&placed[1]));
         assert!(selection.is_selected("b"));
         selection.release(&placed, &grid(), false);
 
@@ -435,7 +435,7 @@ mod tests {
         // is a selection, not a one-pixel nudge.
         let placed = placed(&["a"]);
         let mut selection = Selection::default();
-        let start = centre(&placed[0]);
+        let start = center(&placed[0]);
 
         press(&mut selection, &placed, start);
         selection.motion(&placed, Point::new(start.x + 2, start.y + 1));
@@ -447,7 +447,7 @@ mod tests {
     fn moving_past_the_threshold_becomes_a_drag() {
         let placed = placed(&["a"]);
         let mut selection = Selection::default();
-        let start = centre(&placed[0]);
+        let start = center(&placed[0]);
 
         press(&mut selection, &placed, start);
         // Left and down, away from the corner: dragging the top-right icon further right
@@ -473,7 +473,7 @@ mod tests {
         let placed = placed(&["a"]);
         let grid = grid();
         let mut selection = Selection::default();
-        let start = centre(&placed[0]);
+        let start = center(&placed[0]);
 
         press(&mut selection, &placed, start);
         selection.motion(&placed, Point::new(start.x + 400, start.y + 400));
@@ -491,7 +491,7 @@ mod tests {
         let placed = placed(&["a"]);
         let grid = grid();
         let mut selection = Selection::default();
-        let start = centre(&placed[0]);
+        let start = center(&placed[0]);
 
         press(&mut selection, &placed, start);
         // Somewhere over towards the middle of the screen.
@@ -509,12 +509,12 @@ mod tests {
         // Dragging an icon over its neighbors must not make each of them light up in turn.
         let placed = placed(&["a", "b"]);
         let mut selection = Selection::default();
-        let start = centre(&placed[0]);
+        let start = center(&placed[0]);
 
         selection.hover(&placed, start);
         press(&mut selection, &placed, start);
         selection.motion(&placed, Point::new(start.x + 40, start.y + 40));
-        assert!(!selection.hover(&placed, centre(&placed[1])));
+        assert!(!selection.hover(&placed, center(&placed[1])));
         assert_eq!(selection.hovered(), Some("a"));
     }
 
@@ -537,8 +537,8 @@ mod tests {
     fn a_deleted_file_stops_being_hovered_or_selected() {
         let placed = placed(&["a", "b"]);
         let mut selection = Selection::default();
-        selection.hover(&placed, centre(&placed[0]));
-        press(&mut selection, &placed, centre(&placed[0]));
+        selection.hover(&placed, center(&placed[0]));
+        press(&mut selection, &placed, center(&placed[0]));
         selection.release(&placed, &grid(), false);
 
         selection.retain_only(&["b".to_owned()]);
@@ -552,7 +552,7 @@ mod tests {
         let mut placed = placed(&["under", "over"]);
         placed[1].rect = placed[0].rect;
         let mut selection = Selection::default();
-        press(&mut selection, &placed, centre(&placed[0]));
+        press(&mut selection, &placed, center(&placed[0]));
         assert!(selection.is_selected("over"));
     }
 
@@ -630,7 +630,7 @@ mod tests {
     fn a_click_on_bare_desktop_still_just_deselects() {
         let placed = placed(&["a"]);
         let mut selection = Selection::default();
-        press(&mut selection, &placed, centre(&placed[0]));
+        press(&mut selection, &placed, center(&placed[0]));
         assert!(selection.is_selected("a"));
 
         // Press and release without moving: no band, nothing selected, nothing moved.
@@ -651,10 +651,10 @@ mod tests {
         selection.motion(&placed, corner(&placed[1]));
         selection.release(&placed, &grid(), false);
 
-        press(&mut selection, &placed, centre(&placed[0]));
+        press(&mut selection, &placed, center(&placed[0]));
         selection.motion(
             &placed,
-            Point::new(centre(&placed[0]).x - 200, centre(&placed[0]).y),
+            Point::new(center(&placed[0]).x - 200, center(&placed[0]).y),
         );
 
         assert!(selection.is_dragging("a"));
@@ -675,7 +675,7 @@ mod tests {
         selection.motion(&placed, corner(&placed[1]));
         selection.release(&placed, &grid, false);
 
-        let start = centre(&placed[0]);
+        let start = center(&placed[0]);
         press(&mut selection, &placed, start);
         selection.motion(&placed, Point::new(start.x - 200, start.y + 100));
 
@@ -718,7 +718,7 @@ mod tests {
         assert_eq!(selection.selected().len(), 2);
 
         // Click one of the two, without moving.
-        press(&mut selection, &placed, centre(&placed[1]));
+        press(&mut selection, &placed, center(&placed[1]));
         assert_eq!(selection.selected().len(), 2, "still a group while pressed");
         selection.release(&placed, &grid, false);
         assert_eq!(selection.selected(), ["b"], "the click should narrow it");
@@ -735,7 +735,7 @@ mod tests {
         selection.motion(&placed, corner(&placed[1]));
         selection.release(&placed, &grid, false);
 
-        let start = centre(&placed[0]);
+        let start = center(&placed[0]);
         press(&mut selection, &placed, start);
         selection.motion(&placed, Point::new(start.x - 100, start.y));
         selection.release(&placed, &grid, false);
@@ -758,13 +758,13 @@ mod tests {
         selection.release(&placed, &grid(), false);
         assert_eq!(selection.selected().len(), 2);
 
-        press(&mut selection, &placed, centre(&placed[2]));
+        press(&mut selection, &placed, center(&placed[2]));
         assert_eq!(selection.selected(), ["c"]);
     }
 
     #[test]
     fn a_deleted_file_leaves_a_group_drag_alone() {
-        // A rescan mid-drag must drop the vanished icon without cancelling the move.
+        // A rescan mid-drag must drop the vanished icon without canceling the move.
         let placed = placed(&["a", "b"]);
         let mut selection = Selection::default();
 
@@ -772,7 +772,7 @@ mod tests {
         selection.motion(&placed, corner(&placed[1]));
         selection.release(&placed, &grid(), false);
 
-        let start = centre(&placed[0]);
+        let start = center(&placed[0]);
         press(&mut selection, &placed, start);
         selection.motion(&placed, Point::new(start.x - 100, start.y));
 
@@ -787,7 +787,7 @@ mod tests {
     fn two_quick_presses_on_one_icon_open_it() {
         let placed = placed(&["a", "b"]);
         let mut selection = Selection::default();
-        let at = centre(&placed[0]);
+        let at = center(&placed[0]);
 
         let first = selection.press(&placed, at, 1_000);
         assert_eq!(first.activate, None, "one press only selects");
@@ -799,7 +799,7 @@ mod tests {
     fn two_slow_presses_do_not() {
         let placed = placed(&["a"]);
         let mut selection = Selection::default();
-        let at = centre(&placed[0]);
+        let at = center(&placed[0]);
 
         selection.press(&placed, at, 1_000);
         let second = selection.press(&placed, at, 1_000 + DOUBLE_CLICK_MS + 1);
@@ -811,8 +811,8 @@ mod tests {
         let placed = placed(&["a", "b"]);
         let mut selection = Selection::default();
 
-        selection.press(&placed, centre(&placed[0]), 1_000);
-        let second = selection.press(&placed, centre(&placed[1]), 1_050);
+        selection.press(&placed, center(&placed[0]), 1_000);
+        let second = selection.press(&placed, center(&placed[1]), 1_050);
         assert_eq!(
             second.activate, None,
             "different icons are not a double-click"
@@ -824,7 +824,7 @@ mod tests {
         // Otherwise a rapid triple-click launches twice.
         let placed = placed(&["a"]);
         let mut selection = Selection::default();
-        let at = centre(&placed[0]);
+        let at = center(&placed[0]);
 
         selection.press(&placed, at, 1_000);
         assert!(selection.press(&placed, at, 1_080).activate.is_some());
@@ -837,7 +837,7 @@ mod tests {
     fn a_click_on_bare_desktop_between_the_two_breaks_it_up() {
         let placed = placed(&["a"]);
         let mut selection = Selection::default();
-        let at = centre(&placed[0]);
+        let at = center(&placed[0]);
 
         selection.press(&placed, at, 1_000);
         selection.press(&placed, Point::new(5, 400), 1_050);
@@ -850,7 +850,7 @@ mod tests {
         // Drag an icon somewhere and click it once: that should select, not open.
         let placed = placed(&["a"]);
         let mut selection = Selection::default();
-        let at = centre(&placed[0]);
+        let at = center(&placed[0]);
 
         selection.press(&placed, at, 1_000);
         selection.motion(&placed, Point::new(at.x - 60, at.y + 60));
@@ -867,7 +867,7 @@ mod tests {
         // what must not happen is the subtraction going enormous and every press counting.
         let placed = placed(&["a"]);
         let mut selection = Selection::default();
-        let at = centre(&placed[0]);
+        let at = center(&placed[0]);
 
         selection.press(&placed, at, u32::MAX - 50);
         let across = selection.press(&placed, at, 49);

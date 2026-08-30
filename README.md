@@ -90,7 +90,7 @@ launcher by `StartupWMClass`, then the desktop file's basename, then the `Exec` 
 
 ## The desktop menu
 
-Right-clicking posts the 4Dwm menu, styled as the compositor's window menu and opening with a centred "Desktop"
+Right-clicking posts the 4Dwm menu, styled as the compositor's window menu and opening with a centered "Desktop"
 header. Log Out, Open, Remove and Select All work; Make Copy, Make Reference, Change Permissions and Add New Directory
 are drawn disabled so the menu's shape is right. Open and Remove gray out with nothing selected.
 
