@@ -8,6 +8,7 @@
 //!
 //! [appearance]
 //! palette = "gotham"      # the color scheme; default is "classic"
+//! icon_theme = "Adwaita"  # where an `Icon=` name is looked up; "" for none
 //!
 //! [metrics]
 //! icon = 64               # the icon artwork, square
@@ -75,6 +76,31 @@ pub struct AppearanceConfig {
     /// of those -- a mistyped scheme name must not leave the desktop unpainted.
     #[serde(default)]
     pub palette: Option<String>,
+    /// The icon theme an `Icon=` name is looked up in, before `hicolor` and
+    /// `/usr/share/pixmaps`.
+    ///
+    /// Defaults to Adwaita, and the default is not cosmetic: a themeless lookup searches only
+    /// those two, and almost nothing a `.desktop` file names is in either. Every such launcher
+    /// falls back to a bare magic carpet with no symbol on it. See [`crate::icon_theme`].
+    ///
+    /// An empty string means "no named theme", for a machine whose themes are all wrong for a
+    /// 64-pixel desktop icon.
+    #[serde(default)]
+    pub icon_theme: Option<String>,
+}
+
+/// What [`AppearanceConfig::icon_theme`] means when the file does not say.
+///
+/// Adwaita, because it is what a GTK application would pick and therefore what an installed
+/// desktop already has icons for. Not a wlRIX theme: `wlrix-assets` ships no icon theme yet, and
+/// naming one that does not exist would be the themeless lookup with extra steps.
+const DEFAULT_ICON_THEME: &str = "Adwaita";
+
+impl AppearanceConfig {
+    /// The icon theme to search first.
+    pub fn icon_theme(&self) -> &str {
+        self.icon_theme.as_deref().unwrap_or(DEFAULT_ICON_THEME)
+    }
 }
 
 /// Cell geometry. Every field is optional and falls back to [`Metrics::default`], so a file
@@ -209,6 +235,31 @@ mod tests {
         assert!(metrics.cell_h >= metrics.icon);
         assert!(metrics.gap >= 0);
         assert!(metrics.margin >= 0);
+    }
+
+    #[test]
+    fn the_icon_theme_defaults_to_something_that_has_the_icons() {
+        // Not hicolor: a themeless lookup searches only that and /usr/share/pixmaps, and most
+        // of what a `.desktop` file names is in neither -- so an empty default would leave
+        // every themed launcher showing a bare carpet with no symbol on it.
+        assert_eq!(
+            Config::default().appearance.icon_theme(),
+            "Adwaita",
+            "a desktop with no config file still finds its icons"
+        );
+        let named: Config = toml::from_str("[appearance]\nicon_theme = \"Papirus\"\n").unwrap();
+        assert_eq!(named.appearance.icon_theme(), "Papirus");
+        // ...and it can be turned off outright, back to hicolor and /usr/share/pixmaps.
+        let off: Config = toml::from_str("[appearance]\nicon_theme = \"\"\n").unwrap();
+        assert_eq!(off.appearance.icon_theme(), "");
+    }
+
+    #[test]
+    fn an_appearance_typo_is_refused_rather_than_ignored() {
+        // `icon-theme` is the spelling every other icon-theme document uses, and it is not this
+        // one. Ignoring it would leave the user certain they had set the theme.
+        assert!(toml::from_str::<Config>("[appearance]\nicon-theme = \"Adwaita\"\n").is_err());
+        assert!(toml::from_str::<Config>("[appearance]\nicontheme = \"Adwaita\"\n").is_err());
     }
 
     #[test]

@@ -141,8 +141,10 @@ pub fn run() -> Result<(), String> {
         .map_err(|err| format!("could not watch {}: {err}", directory.display()))?;
 
     let fonts = Fonts::load()?;
+    let mut icons = Icons::default();
+    icons.set_theme(config.appearance.icon_theme());
     eprintln!(
-        "wlrix-desktop: watching {} ({}), labels in {} ({} faces), snap {}",
+        "wlrix-desktop: watching {} ({}), labels in {} ({} faces), icons from {}, snap {}",
         directory.display(),
         if watch.is_watching_directory() {
             "present"
@@ -151,6 +153,12 @@ pub fn run() -> Result<(), String> {
         },
         fonts.family(),
         fonts.face_count(),
+        // Named in the log because "no icon found for ..." right underneath it is otherwise a
+        // line with no next step: which theme was searched is the first thing to check.
+        match config.appearance.icon_theme() {
+            "" => "hicolor only",
+            theme => theme,
+        },
         if snap_to_grid { "on" } else { "off" },
     );
 
@@ -202,7 +210,7 @@ pub fn run() -> Result<(), String> {
         metrics,
         saved,
         snap_to_grid,
-        images: Icons::default(),
+        images: icons,
         running: Running::default(),
         entries: Vec::new(),
         placed: Vec::new(),
@@ -364,8 +372,11 @@ impl Desktop {
             eprintln!("wlrix-desktop: [output] changed; that only takes effect on a restart");
         }
         self.config = config;
+        // Before the clear below, so a theme that has not changed does not clear twice.
+        self.images.set_theme(self.config.appearance.icon_theme());
         // The image cache holds *un-tinted* decodes and the tint is applied per draw, so a
-        // palette change does not invalidate it. This clear is for the icon size.
+        // palette change does not invalidate it. This clear is for the icon size; `set_theme`
+        // has already covered a theme change.
         self.images.clear();
         self.relayout();
         eprintln!("wlrix-desktop: reloaded desktop.toml");

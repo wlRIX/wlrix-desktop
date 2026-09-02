@@ -66,6 +66,13 @@ blob.
 `Icon=` is resolved through the XDG icon theme — index.theme, inheritance, size directories and the
 `/usr/share/pixmaps` fallback — and rasterized at whatever the configured icon size is, so an SVG stays crisp.
 
+**Which theme is searched has to be said.** A themeless lookup covers only `hicolor` and `/usr/share/pixmaps`, and most
+of what a `.desktop` file names is in neither: `Icon=Alacritty` happens to be in `/usr/share/pixmaps`, which is what
+made the themeless call look sufficient, while `Icon=firefox` and `Icon=org.gnome.Nautilus` live in an installed theme
+and resolved to nothing — leaving a bare carpet with no symbol on it. `[appearance] icon_theme` names the theme
+searched first, defaulting to `Adwaita`; the themeless lookup stays behind it, so `hicolor` and `/usr/share/pixmaps`
+are still reached.
+
 ### `X-WLRIX-Running-Icon`
 
 A wlRIX extension, not in the spec, using the `X-` prefix the spec reserves for exactly this — so a file carrying it
@@ -228,10 +235,20 @@ Which scheme is drawn comes from `desktop.toml`:
 ```toml
 [appearance]
 palette = "gotham"      # classic (default), classic-g10, classic-g24, gotham
+icon_theme = "Adwaita"  # where an Icon= name is looked up; "" for hicolor only
 ```
 
 It is live: `SIGHUP` (which `wlrix-settings-daemon` sends, and `kill -HUP` does by hand) re-reads the file and repaints
 if the scheme actually changed. An unrecognized name logs a line and leaves the default showing.
+
+`icon_theme` is live too, and a change to it drops every cached lookup — including the *misses*, since those are
+exactly the names a new theme would find. The theme in use is named in the startup line, because "no icon found for …"
+underneath it is otherwise a log line with no next step.
+
+Only `icon_theme` is a `wlrix-settings-daemon` key; `palette` deliberately is not. One color scheme has to reach the
+compositor, the desktop and the applications at once, and the daemon ties a key to a single owner to signal — so
+declaring it per component would offer four switches for one setting. An icon theme really is per component: these are
+64-pixel launcher symbols, where `wlrix-tray` draws 22-pixel cells.
 
 ## Shared drawing code
 
