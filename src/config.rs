@@ -8,7 +8,7 @@
 //!
 //! [appearance]
 //! palette = "gotham"      # the color scheme; default is "classic"
-//! icon_theme = "Adwaita"  # where an `Icon=` name is looked up; "" for none
+//! icon_theme = "wlrix"    # where an `Icon=` name is looked up; "" for none
 //!
 //! [metrics]
 //! icon = 64               # the icon artwork, square
@@ -79,7 +79,7 @@ pub struct AppearanceConfig {
     /// The icon theme an `Icon=` name is looked up in, before `hicolor` and
     /// `/usr/share/pixmaps`.
     ///
-    /// Defaults to Adwaita, and the default is not cosmetic: a themeless lookup searches only
+    /// Defaults to wlrix, and the default is not cosmetic: a themeless lookup searches only
     /// those two, and almost nothing a `.desktop` file names is in either. Every such launcher
     /// falls back to a bare magic carpet with no symbol on it. See [`crate::icon_theme`].
     ///
@@ -91,10 +91,9 @@ pub struct AppearanceConfig {
 
 /// What [`AppearanceConfig::icon_theme`] means when the file does not say.
 ///
-/// Adwaita, because it is what a GTK application would pick and therefore what an installed
-/// desktop already has icons for. Not a wlRIX theme: `wlrix-assets` ships no icon theme yet, and
-/// naming one that does not exist would be the themeless lookup with extra steps.
-const DEFAULT_ICON_THEME: &str = "Adwaita";
+/// wlrix, the IRIX icon set `wlrix-assets` installs. It inherits Adwaita, so a launcher whose
+/// icon it does not draw still finds the one a GTK application would have shown.
+const DEFAULT_ICON_THEME: &str = "wlrix";
 
 impl AppearanceConfig {
     /// The icon theme to search first.
@@ -244,7 +243,7 @@ mod tests {
         // every themed launcher showing a bare carpet with no symbol on it.
         assert_eq!(
             Config::default().appearance.icon_theme(),
-            "Adwaita",
+            "wlrix",
             "a desktop with no config file still finds its icons"
         );
         let named: Config = toml::from_str("[appearance]\nicon_theme = \"Papirus\"\n").unwrap();

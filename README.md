@@ -70,8 +70,8 @@ blob.
 of what a `.desktop` file names is in neither: `Icon=Alacritty` happens to be in `/usr/share/pixmaps`, which is what
 made the themeless call look sufficient, while `Icon=firefox` and `Icon=org.gnome.Nautilus` live in an installed theme
 and resolved to nothing — leaving a bare carpet with no symbol on it. `[appearance] icon_theme` names the theme
-searched first, defaulting to `Adwaita`; the themeless lookup stays behind it, so `hicolor` and `/usr/share/pixmaps`
-are still reached.
+searched first, defaulting to `wlrix` (which inherits Adwaita); the themeless lookup stays behind it, so `hicolor` and
+`/usr/share/pixmaps` are still reached.
 
 ### `X-WLRIX-Running-Icon`
 
@@ -235,7 +235,7 @@ Which scheme is drawn comes from `desktop.toml`:
 ```toml
 [appearance]
 palette = "gotham"      # classic (default), classic-g10, classic-g24, gotham
-icon_theme = "Adwaita"  # where an Icon= name is looked up; "" for hicolor only
+icon_theme = "wlrix"    # where an Icon= name is looked up; "" for hicolor only
 ```
 
 It is live: `SIGHUP` (which `wlrix-settings-daemon` sends, and `kill -HUP` does by hand) re-reads the file and repaints

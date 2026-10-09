@@ -17,7 +17,7 @@
 //!
 //! So [`Icons::set_theme`] names the theme searched first, and the bare lookup stays behind it as
 //! the fallback -- `hicolor` is what every theme inherits, and it is where a launcher's own
-//! installed icon usually is. The default is Adwaita; see [`crate::config::AppearanceConfig`].
+//! installed icon usually is. The default is wlrix; see [`crate::config::AppearanceConfig`].
 //!
 //! Found while building `wlrix-tray`, which hit the same thing: fcitx5 publishes
 //! `IconName = "input-keyboard-symbolic"`, which is in every installed theme *except* hicolor.
