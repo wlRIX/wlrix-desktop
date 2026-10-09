@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The icons themselves.
+//! The fallback icons, drawn in code.
 //!
-//! There is no artwork in the tree yet, so these are drawn in code -- the same approach
-//! `wlrix-greeter/src/ui/icons.rs` takes for its user icons. Each is a small IRIX-ish emblem:
-//! a folder, a sheet of paper, a launcher badge, a terminal-ish block for an executable.
+//! A file or folder normally takes its type's artwork from the icon theme (see
+//! `ui::paint::themed`). These are what is drawn when nothing there resolves -- no theme
+//! installed, or a theme with no generic icons -- so the desktop is never a field of labels.
+//! The same approach `wlrix-greeter/src/ui/icons.rs` takes for its user icons. Each is a small
+//! IRIX-ish emblem: a folder, a sheet of paper, a launcher badge, a terminal-ish block for an
+//! executable.
 //!
 //! **Everything is drawn into a coverage mask, not straight onto the canvas** -- see
 //! [`wlrix_ui::mask`] for why. What a folder or a launcher badge looks like is this

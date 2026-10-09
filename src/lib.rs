@@ -11,6 +11,7 @@ pub mod icon_theme;
 pub mod layout;
 pub mod locale;
 pub mod menu;
+pub mod mime;
 pub mod open;
 pub mod pidfile;
 pub mod running;

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! What is on the desktop: one entry per file, and enough about each to pick an icon.
 //!
-//! Deliberately shallow for ordinary files: there is no MIME sniffing, and the kind of a file
-//! comes from its metadata and its extension, which is all the drawn-in-code icons need to tell
-//! apart. Reading file contents to choose a picture would mean opening everything on the
-//! desktop on every rescan, for a distinction the user cannot see.
+//! Deliberately shallow for ordinary files: there is no MIME sniffing. The kind of a file comes
+//! from its metadata, and its type -- which decides the icon-theme picture -- from its name,
+//! through [`crate::mime`], the same way a wlRIX Files listing names it. Reading file contents
+//! to choose a picture would mean opening everything on the desktop on every rescan.
 //!
 //! A `.desktop` file is the exception, because it *does* say what it should look like. Those
 //! are parsed here, once per rescan, into a [`Launcher`] -- the icon to draw, the icon to draw
@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::desktop_entry::{DesktopEntry, EntryType};
+use crate::mime::{self, Database};
 
 /// Which icon an entry gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,11 @@ pub struct Entry {
     /// would otherwise find every launcher had forgotten where it was sitting.
     pub label: String,
     pub kind: Kind,
+    /// Icon-theme names to try for this entry, most specific first: `inode-directory` then
+    /// `folder` for a directory, the type's names for a file. Empty for a launcher, which names
+    /// its own artwork. When none of them resolves, the drawn-in-code icon for [`Kind`] is the
+    /// fallback.
+    pub icon_names: Vec<String>,
     /// Set for a `.desktop` file that parses. `None` for everything else, and for a launcher
     /// too broken to read.
     pub launcher: Option<Launcher>,
@@ -139,14 +145,40 @@ impl Entry {
                 .collect(),
         });
 
+        let icon_names = icon_names(Database::shared(), kind, &name, metadata.len());
+
         Some(Self {
             path: path.to_path_buf(),
             name,
             label,
             kind,
+            icon_names,
             launcher,
         })
     }
+}
+
+/// The icon-theme names to try for an entry of `kind` called `name`.
+///
+/// The type comes from the name alone, as a wlRIX Files listing names it, with two things a
+/// listing does not do because the desktop has the metadata in hand anyway: an empty file with
+/// no recognizable name is `inode/x-empty`, and an executable with none is
+/// `application/x-executable` rather than a generic blob.
+fn icon_names(db: &Database, kind: Kind, name: &str, len: u64) -> Vec<String> {
+    let by_name = || db.resolve_by_name(name);
+    let mime = match kind {
+        // `folder` is the name every theme has; `inode-directory` is the type's own, and the
+        // wlrix theme links it to the folder so a lookup stops at the first try.
+        Kind::Directory => {
+            return vec![mime::DIRECTORY.replace('/', "-"), "folder".to_owned()];
+        }
+        // A launcher names its artwork itself; see `ui::paint`.
+        Kind::Launcher => return Vec::new(),
+        Kind::Executable => by_name().unwrap_or(mime::EXECUTABLE),
+        Kind::Plain if len == 0 => by_name().unwrap_or(mime::EMPTY),
+        Kind::Plain => by_name().unwrap_or(mime::DEFAULT),
+    };
+    db.icon_names(mime)
 }
 
 /// Whether any of the three execute bits is set.
@@ -190,6 +222,75 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("make the scratch directory");
         dir
+    }
+
+    /// A small shared-mime-info database, so these do not depend on the machine's.
+    fn mime_db(test: &str) -> Database {
+        let dir = scratch(&format!("mime-{test}"));
+        fs::write(
+            dir.join("globs2"),
+            "50:text/plain:*.txt\n50:application/x-shellscript:*.sh\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("generic-icons"),
+            "application/x-shellscript:text-x-script\n",
+        )
+        .unwrap();
+        let db = Database::load(std::slice::from_ref(&dir));
+        let _ = fs::remove_dir_all(&dir);
+        db
+    }
+
+    #[test]
+    fn a_directory_asks_for_its_type_and_then_folder() {
+        let db = mime_db("dir");
+        assert_eq!(
+            icon_names(&db, Kind::Directory, "notes.txt", 0),
+            ["inode-directory", "folder"],
+            "the stat decides, not the name"
+        );
+    }
+
+    #[test]
+    fn a_file_asks_for_its_types_icons() {
+        let db = mime_db("file");
+        assert_eq!(
+            icon_names(&db, Kind::Plain, "notes.txt", 5),
+            ["text-plain", "text-x-generic"]
+        );
+        // The name decides for an executable too: a script with +x is still a script.
+        assert_eq!(
+            icon_names(&db, Kind::Executable, "run.sh", 9),
+            [
+                "application-x-shellscript",
+                "text-x-script",
+                "application-x-generic"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_nameless_file_falls_back_by_what_the_metadata_says() {
+        let db = mime_db("nameless");
+        assert_eq!(
+            icon_names(&db, Kind::Executable, "a.out", 9),
+            ["application-x-executable", "application-x-generic"]
+        );
+        assert_eq!(
+            icon_names(&db, Kind::Plain, "scratch", 0),
+            ["inode-x-empty", "inode-x-generic"]
+        );
+        assert_eq!(
+            icon_names(&db, Kind::Plain, "blob", 9),
+            ["application-octet-stream", "application-x-generic"]
+        );
+    }
+
+    #[test]
+    fn a_launcher_names_no_theme_icon_of_its_own() {
+        // Its `Icon=` is drawn on a carpet instead; see `ui::paint`.
+        assert!(icon_names(&mime_db("launcher"), Kind::Launcher, "app.desktop", 9).is_empty());
     }
 
     #[test]

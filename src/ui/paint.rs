@@ -290,6 +290,33 @@ fn application(
     true
 }
 
+/// Draw a file's or directory's icon-theme artwork, filling the square. `false` if none of the
+/// entry's names resolves or loads, so the caller can fall back.
+///
+/// Tinted the way a carpet is: **multiplied** by gray at rest, white under the pointer and
+/// yellow when selected. The wlrix theme's IRIX art is drawn in whites and pale grays for
+/// exactly this, so it takes the same gray/white/yellow states as everything else on the
+/// desktop, while its outlines and shading stay dark. Colored art from an inherited theme
+/// darkens a little at rest and goes warm when selected, which reads as a highlight too.
+fn themed(canvas: &mut Canvas, frame: &mut Frame, entry: &Entry, square: Rect, tint: Tint) -> bool {
+    let size = square.w.min(square.h);
+    if size <= 0 || entry.icon_names.is_empty() {
+        return false;
+    }
+    let Some(image) = frame.images.get_first(&entry.icon_names, size) else {
+        return false;
+    };
+    // Centered in the square: a raster icon may come back smaller than asked for.
+    let (x, y) = (
+        square.x + (size - image.width) / 2,
+        square.y + (size - image.height) / 2,
+    );
+    image
+        .multiplied(tint.color(frame.palette))
+        .draw(canvas, x, y);
+    true
+}
+
 /// The cache key for a carpet. Not a real path -- the artwork is compiled in -- but the cache
 /// is keyed by path, and these two names cannot collide with a file on disk.
 fn carpet_key(running: bool) -> &'static Path {
@@ -318,8 +345,9 @@ fn icon(canvas: &mut Canvas, frame: &mut Frame, item: &Placed, cell: Rect, tint:
     let size = frame.icon_size.min(cell.w).min(cell.h);
     let square = Rect::new(cell.x + (cell.w - size) / 2, cell.y, size, size);
 
-    // An application gets its own artwork on a magic carpet; everything else gets the
-    // drawn-in-code icon, which is also the fallback when the artwork will not load.
+    // An application gets its own artwork on a magic carpet; everything else gets its type's
+    // icon from the theme. The drawn-in-code icon is the fallback for both, when no artwork
+    // will load.
     let drawn = item
         .entry
         .launcher
@@ -333,6 +361,7 @@ fn icon(canvas: &mut Canvas, frame: &mut Frame, item: &Placed, cell: Rect, tint:
             is_running(&item.entry, frame.running),
             tint,
         );
+    let drawn = drawn || themed(canvas, frame, &item.entry, square, tint);
     if !drawn {
         icons::draw(canvas, frame.palette, square, item.entry.kind, tint);
     }
@@ -476,6 +505,7 @@ mod tests {
                     name: (*name).to_owned(),
                     label: (*name).to_owned(),
                     kind: Kind::Plain,
+                    icon_names: Vec::new(),
                     launcher: None,
                 },
                 spot: Spot::Slot(index as i32),
@@ -493,6 +523,7 @@ mod tests {
                 name: name.to_owned(),
                 label: name.to_owned(),
                 kind: Kind::Launcher,
+                icon_names: Vec::new(),
                 launcher: Some(crate::entries::Launcher {
                     is_application: true,
                     actions: Vec::new(),
@@ -843,6 +874,7 @@ mod tests {
                 name: "site.desktop".to_owned(),
                 label: "site.desktop".to_owned(),
                 kind: Kind::Launcher,
+                icon_names: Vec::new(),
                 launcher: Some(crate::entries::Launcher {
                     is_application: false,
                     actions: Vec::new(),

@@ -336,6 +336,7 @@ mod tests {
             name: name.to_owned(),
             label: name.to_owned(),
             kind: Kind::Plain,
+            icon_names: Vec::new(),
             launcher: None,
         }
     }

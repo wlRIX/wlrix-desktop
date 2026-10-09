@@ -10,9 +10,23 @@ Icons fill from the **top right of the primary monitor, downward**, starting a n
 of room — the opposite corner and axis from the minimized-window tiles `wlrix-compositor` draws top-left, so the two
 grids grow away from each other.
 
-Files and folders are drawn as coverage masks and tinted by state: knocked-back gray at rest, white under the pointer,
-and IRIX's lamp yellow when selected. Drawing the shape once and blending the tint through it means the three states
-cannot drift apart.
+Files and folders take their type's icon from the icon theme — `wlrix` by default, the IRIX set `wlrix-assets`
+installs — and are tinted by state: knocked-back gray at rest, white under the pointer, and IRIX's lamp yellow when
+selected. The tint **multiplies** the artwork rather than replacing it, the same way a launcher's magic carpet is
+tinted: the IRIX icons are drawn in whites and pale grays for exactly this, so their bodies take the state's color and
+their outlines and shading stay dark. Colored artwork inherited from Adwaita darkens slightly at rest and goes warm when
+selected.
+
+The type comes from the **file name alone**, through the shared-mime-info glob tables (`src/mime.rs`), with the same
+precedence wlRIX Files uses — a literal name, then the longest extension, then any other pattern — so the desktop and
+the file manager show the same picture for the same file. Contents are never read: sniffing would mean opening every
+file on the desktop on every rescan. The metadata fills two gaps a name cannot: an empty file is `inode/x-empty`, and an
+executable with no recognizable name is `application/x-executable`. A type then asks for its icons most specific first —
+`text-markdown`, then `text-x-generic` — and a directory asks for `inode-directory` and then `folder`. The database is
+read once at startup, so a type registered by newly installed software shows its icon after the desktop restarts.
+
+When nothing resolves, the icon is drawn in code as a coverage mask — a folder, a sheet of paper, a terminal-ish block —
+tinted the same way, so a machine with no icon theme at all still has a usable desktop.
 
 ## Labels
 
@@ -259,6 +273,6 @@ It is a **git dependency pinned by rev**, not a path dependency, so this repo st
 clone. To work on both sides at once, `just link-ui` in `wlrix-epoch` writes a `[patch]` into `.cargo/config.toml`
 pointing at a sibling checkout, and `just bump-ui` moves the pin once the change is committed there.
 
-What stayed here: the icon *shapes* (`src/ui/icons.rs`), because what a folder looks like is this component's business,
-and the `Icon=` name lookup (`src/icon_theme.rs`), because that is the icon-theme spec and it is this component that
-reads `.desktop` files.
+What stayed here: the fallback icon *shapes* (`src/ui/icons.rs`), because what a folder looks like is this component's
+business, the icon name lookup (`src/icon_theme.rs`), because that is the icon-theme spec and it is this component that
+reads `.desktop` files, and the file-type lookup (`src/mime.rs`), for the same reason.

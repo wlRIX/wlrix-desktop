@@ -273,6 +273,7 @@ mod tests {
             name: path.file_name().unwrap().to_string_lossy().into_owned(),
             label: path.file_name().unwrap().to_string_lossy().into_owned(),
             kind,
+            icon_names: Vec::new(),
             launcher: None,
         })
     }

@@ -55,6 +55,29 @@ impl Icons {
     /// An absolute path is taken as-is; anything else is a theme lookup. `size` is a request,
     /// not a promise -- a theme may only have one size, and the result is scaled to fit.
     pub fn resolve(&mut self, icon: &str, size: i32) -> Option<PathBuf> {
+        let found = self.find(icon, size);
+        if found.is_none() && !icon.is_empty() {
+            eprintln!("wlrix-desktop: no icon found for {icon:?}");
+        }
+        found
+    }
+
+    /// The first of several candidate names that resolves, for a file type's icon.
+    ///
+    /// Missing names are not reported one by one: a type's list runs from specific to generic,
+    /// and most types have no icon of their own, so `text-markdown` failing on the way to
+    /// `text-x-generic` is the list working. Only a list that finds nothing at all is worth a
+    /// line, and the caller still draws something then.
+    pub fn first(&mut self, icons: &[String], size: i32) -> Option<PathBuf> {
+        let found = icons.iter().find_map(|icon| self.find(icon, size));
+        if found.is_none() && !icons.is_empty() {
+            eprintln!("wlrix-desktop: no icon found for any of {icons:?}");
+        }
+        found
+    }
+
+    /// [`Self::resolve`], without the report.
+    fn find(&mut self, icon: &str, size: i32) -> Option<PathBuf> {
         if icon.is_empty() {
             return None;
         }
@@ -79,9 +102,6 @@ impl Icons {
                     .with_cache()
                     .find()
             });
-        if found.is_none() {
-            eprintln!("wlrix-desktop: no icon found for {icon:?}");
-        }
         self.resolved.insert(icon.to_owned(), found.clone());
         found
     }
@@ -101,6 +121,12 @@ impl Icons {
     /// Resolve and load in one step.
     pub fn get(&mut self, icon: &str, size: i32) -> Option<&Image> {
         let path = self.resolve(icon, size)?;
+        self.images.load(&path, size)
+    }
+
+    /// [`Self::first`] and load in one step.
+    pub fn get_first(&mut self, icons: &[String], size: i32) -> Option<&Image> {
+        let path = self.first(icons, size)?;
         self.images.load(&path, size)
     }
 

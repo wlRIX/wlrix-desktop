@@ -84,6 +84,13 @@ fn main() {
     }
 
     let mut images = Icons::default();
+    // The theme a desktop with no config file uses, so file and folder icons come out as
+    // they would on a fresh install.
+    images.set_theme(
+        wlrix_desktop::config::Config::default()
+            .appearance
+            .icon_theme(),
+    );
     let mut pixels = vec![0u8; (w * h * 4) as usize];
     {
         let mut canvas = Canvas::new(&mut pixels, w, h);
