@@ -14,38 +14,16 @@
 //! shared.
 
 use crate::entries::Kind;
-use wlrix_ui::Rgb;
 use wlrix_ui::canvas::{Canvas, Rect};
 use wlrix_ui::mask::Mask;
 use wlrix_ui::palette::Palette;
+use wlrix_ui::{IconState, Rgb};
 
-/// Which state an icon is in, and so what color it takes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tint {
-    /// At rest.
-    Normal,
-    /// The pointer is over it.
-    Hover,
-    /// Picked.
-    Selected,
-}
-
-impl Tint {
-    /// The color the icon's coverage is blended in.
-    pub fn color(self, palette: &Palette) -> Rgb {
-        match self {
-            Tint::Normal => palette.icon_tint,
-            Tint::Hover => palette.icon_tint_hover,
-            Tint::Selected => palette.icon_tint_selected,
-        }
-    }
-
-    /// The color the label text takes. A selected label inverts onto its tinted background.
-    pub fn label_color(self, palette: &Palette) -> Rgb {
-        match self {
-            Tint::Selected => palette.icon_label_selected,
-            _ => palette.icon_label,
-        }
+/// The color an icon's label text takes. A selected label inverts onto its tinted background.
+pub fn label_color(state: IconState, palette: &Palette) -> Rgb {
+    match state {
+        IconState::Selected => palette.icon_label_selected,
+        _ => palette.icon_label,
     }
 }
 
@@ -113,7 +91,7 @@ pub fn mask(kind: Kind, size: i32) -> Mask {
 ///
 /// `rect` is expected to be the icon square; anything the mask covers outside the canvas is
 /// clipped by [`Canvas::blend`] rather than being an error.
-pub fn draw(canvas: &mut Canvas, palette: &Palette, rect: Rect, kind: Kind, tint: Tint) {
+pub fn draw(canvas: &mut Canvas, palette: &Palette, rect: Rect, kind: Kind, tint: IconState) {
     let size = rect.w.min(rect.h);
     if size <= 0 {
         return;
@@ -121,7 +99,9 @@ pub fn draw(canvas: &mut Canvas, palette: &Palette, rect: Rect, kind: Kind, tint
     // Center the square inside `rect`, so a non-square cell still looks right.
     let x0 = rect.x + (rect.w - size) / 2;
     let y0 = rect.y + (rect.h - size) / 2;
-    mask(kind, size).draw(canvas, Rect::new(x0, y0, size, size), tint.color(palette));
+    // A mask is one flat color, so it takes the state's color without the stipple: a
+    // checkerboard through an antialiased edge reads as noise rather than as IRIX.
+    mask(kind, size).draw(canvas, Rect::new(x0, y0, size, size), tint.flat(palette));
 }
 
 #[cfg(test)]
@@ -197,15 +177,24 @@ mod tests {
         // The whole point of the tint: the three states must be visibly distinct, in every
         // scheme -- a palette that gave two states one color would make hover invisible.
         for palette in wlrix_ui::palette::ALL {
-            assert_ne!(Tint::Normal.color(palette), Tint::Hover.color(palette));
-            assert_ne!(Tint::Normal.color(palette), Tint::Selected.color(palette));
-            assert_ne!(Tint::Hover.color(palette), Tint::Selected.color(palette));
+            assert_ne!(
+                IconState::Normal.flat(palette),
+                IconState::Hover.flat(palette)
+            );
+            assert_ne!(
+                IconState::Normal.flat(palette),
+                IconState::Selected.flat(palette)
+            );
+            assert_ne!(
+                IconState::Hover.flat(palette),
+                IconState::Selected.flat(palette)
+            );
         }
         // And the requested colors specifically, in the default scheme: gray, white, yellow.
         let p = wlrix_ui::palette::DEFAULT;
-        assert_eq!(Tint::Normal.color(p), Rgb(0xff_aaaaaa));
-        assert_eq!(Tint::Hover.color(p), Rgb(0xff_ffffff));
-        assert_eq!(Tint::Selected.color(p), Rgb(0xff_ffff00));
+        assert_eq!(IconState::Normal.flat(p), Rgb(0xff_aaaaaa));
+        assert_eq!(IconState::Hover.flat(p), Rgb(0xff_ffffff));
+        assert_eq!(IconState::Selected.flat(p), Rgb(0xff_ffff00));
     }
 
     #[test]
@@ -219,7 +208,7 @@ mod tests {
             p,
             Rect::new(0, 0, 64, 64),
             Kind::Directory,
-            Tint::Selected,
+            IconState::Selected,
         );
 
         // Somewhere in the folder body should now be the selected yellow.
@@ -243,7 +232,7 @@ mod tests {
             wlrix_ui::palette::DEFAULT,
             Rect::new(0, 0, 0, 0),
             Kind::Plain,
-            Tint::Normal,
+            IconState::Normal,
         );
     }
 }

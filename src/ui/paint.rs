@@ -26,7 +26,8 @@ use crate::running::Running;
 use crate::select::Selection;
 use wlrix_ui::text::{Face, Fonts, Run};
 
-use crate::ui::icons::{self, Tint};
+use crate::ui::icons::{self, label_color};
+use wlrix_ui::IconState;
 use wlrix_ui::canvas::{Canvas, Rect};
 use wlrix_ui::motif;
 use wlrix_ui::palette::Palette;
@@ -243,7 +244,7 @@ fn application(
     entry: &Entry,
     square: Rect,
     running: bool,
-    tint: Tint,
+    tint: IconState,
 ) -> bool {
     let size = square.w.min(square.h);
     if size <= 0 {
@@ -261,7 +262,7 @@ fn application(
         return false;
     };
     carpet
-        .multiplied(tint.color(frame.palette))
+        .in_state(tint, frame.palette)
         .draw(canvas, square.x, square.y);
 
     // `X-WLRIX-Running-Icon` replaces `Icon` while the application is up -- IRIX let an
@@ -293,12 +294,18 @@ fn application(
 /// Draw a file's or directory's icon-theme artwork, filling the square. `false` if none of the
 /// entry's names resolves or loads, so the caller can fall back.
 ///
-/// Tinted the way a carpet is: **multiplied** by gray at rest, white under the pointer and
-/// yellow when selected. The wlrix theme's IRIX art is drawn in whites and pale grays for
-/// exactly this, so it takes the same gray/white/yellow states as everything else on the
-/// desktop, while its outlines and shading stay dark. Colored art from an inherited theme
-/// darkens a little at rest and goes warm when selected, which reads as a highlight too.
-fn themed(canvas: &mut Canvas, frame: &mut Frame, entry: &Entry, square: Rect, tint: Tint) -> bool {
+/// In the state the way a carpet is, by IRIX's rule ([`wlrix_ui::icon_state`]): only the light
+/// body changes -- stippled gray at rest, white under the pointer, yellow when selected -- and
+/// the outline, the drop shadow and colored detail stay as drawn. The wlrix theme's IRIX art
+/// is drawn with exactly such a body. Colored art from an inherited theme has little or none,
+/// so it changes little; its label still inverts when selected.
+fn themed(
+    canvas: &mut Canvas,
+    frame: &mut Frame,
+    entry: &Entry,
+    square: Rect,
+    tint: IconState,
+) -> bool {
     let size = square.w.min(square.h);
     if size <= 0 || entry.icon_names.is_empty() {
         return false;
@@ -311,9 +318,7 @@ fn themed(canvas: &mut Canvas, frame: &mut Frame, entry: &Entry, square: Rect, t
         square.x + (size - image.width) / 2,
         square.y + (size - image.height) / 2,
     );
-    image
-        .multiplied(tint.color(frame.palette))
-        .draw(canvas, x, y);
+    image.in_state(tint, frame.palette).draw(canvas, x, y);
     true
 }
 
@@ -329,18 +334,18 @@ fn carpet_key(running: bool) -> &'static Path {
 
 /// Which tint an icon takes. Selection wins over hover: a selected icon under the pointer
 /// should stay yellow rather than flicking to white as the pointer crosses it.
-fn tint_for(selection: &Selection, name: &str) -> Tint {
+fn tint_for(selection: &Selection, name: &str) -> IconState {
     if selection.is_selected(name) {
-        Tint::Selected
+        IconState::Selected
     } else if selection.hovered() == Some(name) {
-        Tint::Hover
+        IconState::Hover
     } else {
-        Tint::Normal
+        IconState::Normal
     }
 }
 
 /// Draw one icon and its label inside `cell`.
-fn icon(canvas: &mut Canvas, frame: &mut Frame, item: &Placed, cell: Rect, tint: Tint) {
+fn icon(canvas: &mut Canvas, frame: &mut Frame, item: &Placed, cell: Rect, tint: IconState) {
     // The icon square, centered across the cell and hard against its top.
     let size = frame.icon_size.min(cell.w).min(cell.h);
     let square = Rect::new(cell.x + (cell.w - size) / 2, cell.y, size, size);
@@ -396,7 +401,7 @@ fn label(
     fonts: &mut Fonts,
     name: &str,
     area: Rect,
-    tint: Tint,
+    tint: IconState,
 ) {
     if area.h <= 0 || area.w <= 0 {
         return;
@@ -414,7 +419,7 @@ fn label(
     let lines = wrap(fonts, name, area.w - 2 * LABEL_PAD, fits.min(LABEL_LINES));
 
     // A selected label inverts onto its tint, the way IRIX highlighted a picked name.
-    if tint == Tint::Selected {
+    if tint == IconState::Selected {
         let widest = lines
             .iter()
             .map(|line| fonts.width(Face::Regular, LABEL_PX, line))
@@ -428,7 +433,7 @@ fn label(
                 widest + 2 * LABEL_PAD,
                 height,
             ),
-            tint.color(palette),
+            tint.flat(palette),
         );
     }
 
@@ -446,7 +451,7 @@ fn label(
                 px: LABEL_PX,
                 x: area.x + (area.w - width) / 2,
                 baseline: top + ascent,
-                color: tint.label_color(palette),
+                color: label_color(tint, palette),
             },
             line,
         );
@@ -908,13 +913,13 @@ mod tests {
             Point::new(placed[0].rect.x + 4, placed[0].rect.y + 4),
             0,
         );
-        assert_eq!(tint_for(&selection, "a"), Tint::Selected);
+        assert_eq!(tint_for(&selection, "a"), IconState::Selected);
     }
 
     #[test]
     fn an_untouched_icon_is_plain() {
         let selection = Selection::default();
-        assert_eq!(tint_for(&selection, "a"), Tint::Normal);
+        assert_eq!(tint_for(&selection, "a"), IconState::Normal);
     }
 
     #[test]

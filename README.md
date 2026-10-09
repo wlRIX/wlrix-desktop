@@ -11,11 +11,16 @@ of room — the opposite corner and axis from the minimized-window tiles `wlrix-
 grids grow away from each other.
 
 Files and folders take their type's icon from the icon theme — `wlrix` by default, the IRIX set `wlrix-assets`
-installs — and are tinted by state: knocked-back gray at rest, white under the pointer, and IRIX's lamp yellow when
-selected. The tint **multiplies** the artwork rather than replacing it, the same way a launcher's magic carpet is
-tinted: the IRIX icons are drawn in whites and pale grays for exactly this, so their bodies take the state's color and
-their outlines and shading stay dark. Colored artwork inherited from Adwaita darkens slightly at rest and goes warm when
+installs — and show their state by IRIX's rule, which lives in `wlrix-ui`'s `icon_state` and which the greeter's user
+pictures follow too: **only the icon's light body changes.** At rest it is a checkerboard of white and the palette's
+rest gray, under the pointer solid white, and selected IRIX's lamp yellow. The outline, the drop shadow and colored
+detail — a folder's tan — are drawn the same in all three. The body is found by lightness (every channel at least
+`0xd0`) and multiplied by the state's color, so an off-white body like a text file's `#ffefe5` keeps its shading.
+Colored artwork inherited from Adwaita has little or no such body and so barely changes; its label still inverts when
 selected.
+
+That replaced multiplying the whole icon by one color, which also tinted the drop shadow — olive under yellow — and drew
+the rest state as a flat gray where IRIX stippled.
 
 The type comes from the **file name alone**, through the shared-mime-info glob tables (`src/mime.rs`), with the same
 precedence wlRIX Files uses — a literal name, then the longest extension, then any other pattern — so the desktop and
@@ -72,10 +77,9 @@ carpet under a symbol that stays put.
 
 Only `Type=Application` entries get one; a file, a folder or a `Type=Link` bookmark has no running state to show.
 
-**The tint currently only goes on the carpet, not the symbol.** The carpet is wlRIX's own artwork, so gray/white/yellow
-is exactly the IRIX rule there, while an application's icon keeps the colors it was drawn in. The tint *multiplies*
-rather than replaces, so the carpet's black outline and shadow survive a yellow selection instead of flattening into a
-blob.
+**The state shows on the carpet, not the symbol.** The carpet is wlRIX's own artwork, with a white body, a black
+outline and a shadow, so it follows the same rule as every other icon: the body is stippled, white or yellow, and the
+outline and shadow stay put. An application's icon standing on it keeps the colors it was drawn in.
 
 `Icon=` is resolved through the XDG icon theme — index.theme, inheritance, size directories and the
 `/usr/share/pixmaps` fallback — and rasterized at whatever the configured icon size is, so an SVG stays crisp.
