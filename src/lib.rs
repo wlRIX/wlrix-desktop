@@ -18,6 +18,7 @@ pub mod running;
 pub mod select;
 pub mod session;
 pub mod signals;
+pub mod sound;
 pub mod state;
 pub mod trash;
 pub mod ui;

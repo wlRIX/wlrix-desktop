@@ -495,8 +495,17 @@ impl Desktop {
             Ok(child) => {
                 eprintln!("wlrix-desktop: opened {} (pid {})", entry.name, child.id());
                 self.children.push(child);
+                // IRIX's two double-click sounds: a folder opening, and everything else, which
+                // starts a program -- the launcher's, or the one a document opens in.
+                crate::sound::play(match entry.kind {
+                    crate::entries::Kind::Directory => "wlrix-open-folder",
+                    _ => "wlrix-launch",
+                });
             }
-            Err(why) => eprintln!("wlrix-desktop: {why}"),
+            Err(why) => {
+                eprintln!("wlrix-desktop: {why}");
+                crate::sound::play("bell");
+            }
         }
     }
 
@@ -636,6 +645,7 @@ impl Desktop {
         }
         if removed > 0 {
             eprintln!("wlrix-desktop: moved {removed} item(s) to the trash");
+            crate::sound::play("file-trash");
             // The watch will notice too, but rescanning now means the icons go immediately
             // rather than after the inotify round trip.
             self.rescan();
@@ -1012,6 +1022,7 @@ impl PointerHandler for Desktop {
                             self.saved.set_spot(&drop.name, drop.spot);
                         }
                         self.relayout();
+                        crate::sound::play("wlrix-icon-shift");
                     }
                     self.dirty = true;
                 }
