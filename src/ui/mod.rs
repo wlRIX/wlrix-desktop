@@ -378,15 +378,21 @@ impl Desktop {
 
     /// Re-read the desktop directory and lay it out again.
     fn rescan(&mut self) {
-        self.entries = crate::entries::read(&self.directory);
-        // Last, so a desktop that has never been arranged lays the Dumpster out after the
-        // files rather than among them.
+        // The desktop's own icons first, as IRIX laid them out: the home folder, then the
+        // Dumpster, then the files. A desktop that has never been arranged places them in that
+        // order; one that has keeps wherever they were put.
+        let mut entries = Vec::new();
+        if let Some(home) = crate::xdg::home() {
+            entries.push(crate::entries::home(&home, &login_name(&home)));
+        }
         if let Some(files) = &self.trash_files {
-            self.entries.push(crate::entries::dumpster(
+            entries.push(crate::entries::dumpster(
                 files,
                 crate::trash::is_full(files),
             ));
         }
+        entries.extend(crate::entries::read(&self.directory));
+        self.entries = entries;
         let names: Vec<String> = self
             .entries
             .iter()
@@ -723,12 +729,13 @@ impl Desktop {
 
     /// Move the icons called `names` to the trash, playing `sound` if any went.
     ///
-    /// The Dumpster itself is skipped: it is not a file, and throwing the trash into the trash
-    /// is not something anyone means.
+    /// The desktop's own icons are skipped. The Dumpster is not a file, and throwing the trash
+    /// into the trash is not something anyone means; the home folder is the user's whole home
+    /// directory, and no click on the desktop should be able to throw that away.
     fn throw_away(&mut self, names: &[String], sound: &str) {
         let mut removed = 0;
         for name in names {
-            if name == crate::entries::DUMPSTER {
+            if crate::entries::is_builtin(name) {
                 continue;
             }
             let Some(entry) = self.entries.iter().find(|entry| &entry.name == name) else {
@@ -1168,6 +1175,21 @@ delegate_registry!(Desktop);
 ///
 /// Never fails. A desktop that refused to start over a misspelled scheme name would be a
 /// worse answer than a desktop in the wrong colors.
+/// The name under the home folder: the login name, as IRIX showed it.
+///
+/// `$USER` as a login shell sets it, then `$LOGNAME`, and failing both the home directory's own
+/// name -- which on almost every system is the same word.
+fn login_name(home: &std::path::Path) -> String {
+    ["USER", "LOGNAME"]
+        .into_iter()
+        .find_map(|key| std::env::var(key).ok().filter(|name| !name.is_empty()))
+        .or_else(|| {
+            home.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "home".to_owned())
+}
+
 fn resolve_palette(config: &Config) -> &'static Palette {
     let (palette, unknown) = wlrix_ui::palette::resolve(config.appearance.palette.as_deref());
     if let Some(why) = unknown {

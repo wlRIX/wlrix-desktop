@@ -125,6 +125,16 @@ Right-clicking posts the 4Dwm menu, styled as the compositor's window menu and o
 header. Log Out, Open, Remove and Select All work; Make Copy, Make Reference, Change Permissions and Add New Directory
 are drawn disabled so the menu's shape is right. Open and Remove gray out with nothing selected.
 
+### The home folder
+
+Every IRIX desktop had the user's home directory on it, as an ordinary folder labeled with the login name. This one does
+too: it opens the home directory, and is drawn, opened and heard as any folder is. It is not a file on the desktop: it is
+known by the name `/home`, which no file can have, so a folder called `home` or a link to `~` stays a file of its own.
+Remove skips it, so no click on the desktop can send the home directory to the trash.
+
+A desktop that has never been arranged lays out the home folder first, then the Dumpster, then the files. Once placed,
+both stay where they are put.
+
 ### The Dumpster
 
 IRIX's trash can sits among the icons. It is not a file on the desktop: it is the freedesktop trash's `files` directory,

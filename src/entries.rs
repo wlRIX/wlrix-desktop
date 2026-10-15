@@ -42,12 +42,45 @@ pub const DUMPSTER: &str = "/dumpster";
 /// names, so a theme without it shows the Dumpster as it was, tinted.
 pub const DUMPSTER_OPEN: &str = "wlrix-dumpster-open";
 
+/// The name the home folder is known by. Like [`DUMPSTER`], begins with a `/` so no file on the
+/// desktop can be it -- a folder that happens to be called "home", or a link to the home
+/// directory someone made by hand, stays a file of its own.
+pub const HOME: &str = "/home";
+
+/// The user's home directory, as IRIX put it on every desktop: an ordinary folder with the login
+/// name under it, opening the home directory.
+///
+/// A [`Kind::Directory`], so it is drawn, opened and sounds exactly as a folder on the desktop
+/// does; only its name, which no file can have, keeps it from being moved to the trash.
+pub fn home(path: &Path, login: &str) -> Entry {
+    Entry {
+        path: path.to_path_buf(),
+        name: HOME.to_owned(),
+        label: login.to_owned(),
+        kind: Kind::Directory,
+        icon_names: vec![mime::DIRECTORY.replace('/', "-"), "folder".to_owned()],
+        launcher: None,
+    }
+}
+
 impl Entry {
+    /// Whether this is one of the desktop's own icons -- the home folder or the Dumpster --
+    /// rather than a file in the desktop directory. Those cannot be removed: there is no file of
+    /// theirs to move to the trash.
+    pub fn is_builtin(&self) -> bool {
+        is_builtin(&self.name)
+    }
+
     /// Whether icons dragged over this one could be dropped on it. Only the Dumpster, today:
     /// dropping on a folder to move into it is still to come.
     pub fn accepts_drop(&self) -> bool {
         self.kind == Kind::Dumpster
     }
+}
+
+/// Whether `name` is a built-in icon's: one no file name can be, since it begins with `/`.
+pub fn is_builtin(name: &str) -> bool {
+    name.starts_with('/')
 }
 
 /// The Dumpster, showing empty or full.
@@ -495,5 +528,25 @@ mod tests {
         fs::write(dir.join("dumpster"), "").unwrap();
         fs::write(dir.join("Dumpster"), "").unwrap();
         assert!(read(&dir).iter().all(|entry| entry.name != DUMPSTER));
+    }
+
+    #[test]
+    fn the_home_folder_is_a_folder_no_file_can_be() {
+        let home = home(Path::new("/home/me"), "me");
+        assert_eq!(home.kind, Kind::Directory);
+        assert_eq!(home.path, Path::new("/home/me"));
+        assert_eq!(home.label, "me");
+        assert_eq!(home.icon_names, ["inode-directory", "folder"]);
+        assert!(home.is_builtin());
+
+        // A folder called "home", or a link to the home directory made by hand, stays a file.
+        let dir = scratch("home-name");
+        fs::create_dir(dir.join("home")).unwrap();
+        let read = read(&dir);
+        assert!(
+            read.iter()
+                .all(|entry| entry.name != HOME && !entry.is_builtin())
+        );
+        assert!(dumpster(Path::new("/t"), false).is_builtin());
     }
 }
