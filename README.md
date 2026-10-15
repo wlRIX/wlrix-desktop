@@ -119,6 +119,19 @@ Right-clicking posts the 4Dwm menu, styled as the compositor's window menu and o
 header. Log Out, Open, Remove and Select All work; Make Copy, Make Reference, Change Permissions and Add New Directory
 are drawn disabled so the menu's shape is right. Open and Remove gray out with nothing selected.
 
+### The Dumpster
+
+IRIX's trash can sits among the icons. It is not a file on the desktop: it is the freedesktop trash's `files` directory,
+known by the name `/dumpster`, which no file can have. It shows `user-trash-full` or `user-trash` from the icon theme,
+and a drawn bin when the theme has neither. A watch on the trash flips it the moment anything is thrown away or emptied,
+from anywhere.
+
+- Drag icons onto it to trash them (`wlrix-drag-to-trash`); they keep no position, since they have left the desktop.
+- Double-click it to open the trash in the file manager.
+- With it alone selected, the menu ends with **Empty Dumpster**, enabled while it is full. The desktop cannot show a
+  dialog, so this runs `wlrix-files --empty-trash`, which asks and then empties.
+- Remove skips it; the trash cannot be thrown into itself.
+
 ### Launcher actions
 
 A `.desktop` file can offer more than one way in. Steam's lists Store, Library, Friends and the rest as

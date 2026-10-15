@@ -130,6 +130,12 @@ impl Selection {
             .is_some_and(|drag| drag.names.iter().any(|dragged| dragged == name))
     }
 
+    /// Whether a drag is under way, past the threshold -- as opposed to a click, a rubber band
+    /// or nothing at all.
+    pub fn is_dragging_any(&self) -> bool {
+        self.drag.as_ref().is_some_and(|drag| drag.moved)
+    }
+
     /// How far the dragged icons have traveled from where they were picked up.
     ///
     /// A delta rather than an absolute position, so a group stays rigid: every icon in the

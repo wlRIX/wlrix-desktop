@@ -67,6 +67,9 @@ pub enum Action {
     AddNewDirectory,
     /// Select every icon.
     SelectAll,
+    /// Delete everything in the trash, after asking. Offered when the Dumpster is the only
+    /// thing selected; enabled while it is full.
+    EmptyDumpster,
     /// Run one of the selected launcher's `[Desktop Action …]` groups, by its position in
     /// [`Menu::actions`]. Ask [`Menu::action_target`] which file and which id that is.
     ///
@@ -184,6 +187,21 @@ impl Menu {
         origin: Point,
         selected: usize,
         actions: Option<Actions>,
+        measure: impl FnMut(&str) -> i32,
+    ) -> Self {
+        Self::with_dumpster(origin, selected, actions, None, measure)
+    }
+
+    /// [`Menu::new`], for a selection that may be the Dumpster alone.
+    ///
+    /// `dumpster` is `Some(full)` when the Dumpster is the only thing selected: the menu then
+    /// ends with Empty Dumpster, behind a separator of its own as a launcher's actions are,
+    /// and enabled only while there is something to empty. IRIX put it in the same place.
+    pub fn with_dumpster(
+        origin: Point,
+        selected: usize,
+        actions: Option<Actions>,
+        dumpster: Option<bool>,
         mut measure: impl FnMut(&str) -> i32,
     ) -> Self {
         let has_selection = selected > 0;
@@ -217,6 +235,11 @@ impl Menu {
                     actions.items.iter().map(|item| item.id.clone()).collect(),
                 )
             });
+
+        if let Some(full) = dumpster {
+            entries.push(Entry::separator());
+            entries.push(Entry::item(Action::EmptyDumpster, "Empty Dumpster", full));
+        }
 
         let width = width_for(&entries, &mut measure);
         Self {
@@ -291,6 +314,16 @@ impl Menu {
         measure: impl FnMut(&str) -> i32,
     ) -> Rect {
         Menu::new(Point::new(0, 0), selected, actions, measure).panel()
+    }
+
+    /// [`Menu::size_for`], for [`Menu::with_dumpster`].
+    pub fn size_with_dumpster(
+        selected: usize,
+        actions: Option<Actions>,
+        dumpster: Option<bool>,
+        measure: impl FnMut(&str) -> i32,
+    ) -> Rect {
+        Menu::with_dumpster(Point::new(0, 0), selected, actions, dumpster, measure).panel()
     }
 }
 
@@ -733,5 +766,25 @@ mod tests {
         let area = Rect::new(0, 0, panel.w + 14, 800);
         let placed = Menu::clamp(Point::new(100, 40), panel, area);
         assert_eq!(placed.x, 14, "should rest against the right edge");
+    }
+
+    #[test]
+    fn the_dumpster_alone_offers_empty_dumpster_last() {
+        let full = Menu::with_dumpster(Point::new(100, 100), 1, None, Some(true), measure);
+        let last = full.entries.last().unwrap();
+        assert_eq!(last.label, "Empty Dumpster");
+        assert_eq!(last.action(), Some(Action::EmptyDumpster));
+        assert!(last.enabled);
+        assert!(full.entries[full.entries.len() - 2].is_separator());
+
+        // An empty Dumpster has nothing to empty.
+        let empty = Menu::with_dumpster(Point::new(100, 100), 1, None, Some(false), measure);
+        assert!(!empty.entries.last().unwrap().enabled);
+
+        // And any other selection leaves the menu as it was.
+        assert_eq!(
+            menu(1).entries,
+            Menu::with_dumpster(Point::new(100, 100), 1, None, None, measure).entries
+        );
     }
 }

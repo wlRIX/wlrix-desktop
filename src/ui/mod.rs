@@ -103,6 +103,12 @@ pub struct Desktop {
     fonts: Fonts,
     directory: PathBuf,
     watch: Watch,
+    /// The trash's `files` directory, for the Dumpster. `None` with no home directory, when
+    /// there is no trash and no Dumpster either.
+    trash_files: Option<PathBuf>,
+    /// A watch on `trash_files`, so the Dumpster shows full the moment something is thrown
+    /// away from anywhere -- Files, a shell, another desktop -- and empty once it is emptied.
+    trash_watch: Option<Watch>,
     config: Config,
     /// The color scheme everything is drawn in, resolved from `config` at load and on every
     /// reload. `&'static`, because every scheme is baked into `wlrix-ui`.
@@ -139,6 +145,19 @@ pub fn run() -> Result<(), String> {
         .ok_or_else(|| "no home directory, so no desktop directory".to_string())?;
     let watch = Watch::new(&directory)
         .map_err(|err| format!("could not watch {}: {err}", directory.display()))?;
+
+    // The Dumpster's directory and its watch. Neither is worth refusing to start over: without
+    // them the desktop simply has no Dumpster.
+    let trash_files = crate::trash::files_dir();
+    let trash_watch = trash_files
+        .as_deref()
+        .and_then(|files| match Watch::new(files) {
+            Ok(watch) => Some(watch),
+            Err(err) => {
+                eprintln!("wlrix-desktop: could not watch {}: {err}", files.display());
+                None
+            }
+        });
 
     let fonts = Fonts::load()?;
     let mut icons = Icons::default();
@@ -188,6 +207,12 @@ pub fn run() -> Result<(), String> {
         .try_clone()
         .map_err(|err| format!("could not duplicate the inotify descriptor: {err}"))?;
 
+    let trash_fd = trash_watch
+        .as_ref()
+        .map(|watch| watch.as_fd().try_clone())
+        .transpose()
+        .map_err(|err| format!("could not duplicate the trash watch descriptor: {err}"))?;
+
     let mut desktop = Desktop {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
@@ -205,6 +230,8 @@ pub fn run() -> Result<(), String> {
         fonts,
         directory,
         watch,
+        trash_files,
+        trash_watch,
         palette: resolve_palette(&config),
         config,
         metrics,
@@ -257,6 +284,27 @@ pub fn run() -> Result<(), String> {
             },
         )
         .map_err(|err| format!("could not watch the desktop directory: {err}"))?;
+
+    // The trash, the same way. Anything at all happening there may have changed whether the
+    // Dumpster is full, and a rescan is how the icon finds out.
+    if let Some(trash_fd) = trash_fd {
+        loop_handle
+            .insert_source(
+                Generic::new(trash_fd, Interest::READ, Mode::Level),
+                |_, _, desktop: &mut Desktop| {
+                    let changed = match (desktop.trash_watch.as_mut(), desktop.trash_files.clone())
+                    {
+                        (Some(watch), Some(files)) => watch.drain(&files),
+                        _ => false,
+                    };
+                    if changed {
+                        desktop.rescan();
+                    }
+                    Ok(PostAction::Continue)
+                },
+            )
+            .map_err(|err| format!("could not watch the trash: {err}"))?;
+    }
 
     // Re-read `desktop.toml` on `SIGHUP`, so a settings change applies without restarting the
     // desktop. `wlrix-settings-daemon` finds this process through the pidfile below; `kill -HUP`
@@ -331,6 +379,14 @@ impl Desktop {
     /// Re-read the desktop directory and lay it out again.
     fn rescan(&mut self) {
         self.entries = crate::entries::read(&self.directory);
+        // Last, so a desktop that has never been arranged lays the Dumpster out after the
+        // files rather than among them.
+        if let Some(files) = &self.trash_files {
+            self.entries.push(crate::entries::dumpster(
+                files,
+                crate::trash::is_full(files),
+            ));
+        }
         let names: Vec<String> = self
             .entries
             .iter()
@@ -498,7 +554,9 @@ impl Desktop {
                 // IRIX's two double-click sounds: a folder opening, and everything else, which
                 // starts a program -- the launcher's, or the one a document opens in.
                 crate::sound::play(match entry.kind {
-                    crate::entries::Kind::Directory => "wlrix-open-folder",
+                    crate::entries::Kind::Directory | crate::entries::Kind::Dumpster => {
+                        "wlrix-open-folder"
+                    }
                     _ => "wlrix-launch",
                 });
             }
@@ -516,6 +574,13 @@ impl Desktop {
     fn open_menu(&mut self, at: Point) {
         let selected = self.selection.selected().len();
         let launcher = self.lone_launcher();
+        // Empty Dumpster, when the Dumpster is all that is selected; enabled while it is full.
+        let dumpster = match self.selection.selected() {
+            [name] if name == crate::entries::DUMPSTER => {
+                self.trash_files.as_deref().map(crate::trash::is_full)
+            }
+            _ => None,
+        };
         let area = Rect::new(0, 0, self.width.max(1) as i32, self.height.max(1) as i32);
 
         // How wide a label is belongs to the font, and the menu knows nothing about fonts; it
@@ -526,9 +591,9 @@ impl Desktop {
             .as_ref()
             .map(|(name, items)| MenuActions { entry: name, items });
 
-        let size = Menu::size_for(selected, actions.clone(), &mut measure);
+        let size = Menu::size_with_dumpster(selected, actions.clone(), dumpster, &mut measure);
         let origin = Menu::clamp(at, size, area);
-        let menu = Menu::new(origin, selected, actions, &mut measure);
+        let menu = Menu::with_dumpster(origin, selected, actions, dumpster, &mut measure);
 
         self.menu = Some(menu);
         self.dirty = true;
@@ -585,6 +650,7 @@ impl Desktop {
                 }
             }
             Action::Remove => self.remove_selected(),
+            Action::EmptyDumpster => self.empty_dumpster(),
             Action::SelectAll => {
                 let names: Vec<String> = self
                     .entries
@@ -633,8 +699,38 @@ impl Desktop {
     /// band-selected group must be recoverable. See [`crate::trash`].
     fn remove_selected(&mut self) {
         let selected = self.selection.selected().to_vec();
+        self.throw_away(&selected, "file-trash");
+    }
+
+    /// Empty Dumpster: ask, then delete everything in the trash for good.
+    ///
+    /// Handed to `wlrix-files --empty-trash`, which asks the question -- the desktop cannot put
+    /// a dialog on screen -- and does the emptying. A running file manager asks over its own
+    /// window; otherwise that command shows the question alone and exits. The watch on the
+    /// trash turns the icon back to empty when it is done.
+    fn empty_dumpster(&mut self) {
+        match std::process::Command::new("wlrix-files")
+            .arg("--empty-trash")
+            .spawn()
+        {
+            Ok(child) => self.children.push(child),
+            Err(err) => {
+                eprintln!("wlrix-desktop: could not run wlrix-files to empty the Dumpster: {err}");
+                crate::sound::play("bell");
+            }
+        }
+    }
+
+    /// Move the icons called `names` to the trash, playing `sound` if any went.
+    ///
+    /// The Dumpster itself is skipped: it is not a file, and throwing the trash into the trash
+    /// is not something anyone means.
+    fn throw_away(&mut self, names: &[String], sound: &str) {
         let mut removed = 0;
-        for name in &selected {
+        for name in names {
+            if name == crate::entries::DUMPSTER {
+                continue;
+            }
             let Some(entry) = self.entries.iter().find(|entry| &entry.name == name) else {
                 continue;
             };
@@ -645,7 +741,7 @@ impl Desktop {
         }
         if removed > 0 {
             eprintln!("wlrix-desktop: moved {removed} item(s) to the trash");
-            crate::sound::play("file-trash");
+            crate::sound::play(sound);
             // The watch will notice too, but rescanning now means the icons go immediately
             // rather than after the inotify round trip.
             self.rescan();
@@ -1011,13 +1107,27 @@ impl PointerHandler for Desktop {
                     }
                 }
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
+                    // Asked before the release, which ends the drag: is the pointer over the
+                    // Dumpster, with icons that are not the Dumpster being dragged onto it.
+                    let into_dumpster = self.selection.is_dragging_any()
+                        && !self.selection.is_dragging(crate::entries::DUMPSTER)
+                        && self.placed.iter().any(|item| {
+                            item.entry.kind == crate::entries::Kind::Dumpster
+                                && item.rect.contains(point)
+                        });
                     let grid = self.grid();
                     // A drop can move several icons at once, when a rubber band selected them
                     // and one of them was then dragged.
                     let dropped = self
                         .selection
                         .release(&self.placed, &grid, self.snap_to_grid);
-                    if !dropped.is_empty() {
+                    if into_dumpster && !dropped.is_empty() {
+                        // Thrown away rather than moved: they keep no position, since they
+                        // are no longer on the desktop.
+                        let names: Vec<String> =
+                            dropped.into_iter().map(|drop| drop.name).collect();
+                        self.throw_away(&names, "wlrix-drag-to-trash");
+                    } else if !dropped.is_empty() {
                         for drop in dropped {
                             self.saved.set_spot(&drop.name, drop.spot);
                         }

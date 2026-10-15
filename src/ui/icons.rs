@@ -71,6 +71,16 @@ pub fn mask(kind: Kind, size: i32) -> Mask {
             }
             mask.rect(x + u(28), y + u(30), u(14), u(2));
         }
+        Kind::Dumpster => {
+            // IRIX's dumpster: a lid with a handle, over a body ribbed top to bottom.
+            mask.rect(u(26), u(6), u(12), u(4));
+            mask.rect(u(10), u(10), u(44), u(5));
+            let (x, y, w, h) = (u(14), u(17), u(36), u(41));
+            mask.outline(x, y, w, h);
+            for rib in 1..4 {
+                mask.rect(x + rib * w / 4, y + u(5), u(2), h - u(10));
+            }
+        }
         Kind::Launcher => {
             // A sheet like Plain, but badged: a solid diamond marks "this starts something".
             let (x, y, w, h) = (u(12), u(6), u(40), u(52));
@@ -108,11 +118,12 @@ pub fn draw(canvas: &mut Canvas, palette: &Palette, rect: Rect, kind: Kind, tint
 mod tests {
     use super::*;
 
-    const KINDS: [Kind; 4] = [
+    const KINDS: [Kind; 5] = [
         Kind::Directory,
         Kind::Plain,
         Kind::Executable,
         Kind::Launcher,
+        Kind::Dumpster,
     ];
 
     fn coverage(mask: &Mask) -> Vec<u8> {

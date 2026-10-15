@@ -26,6 +26,37 @@ pub enum Kind {
     Executable,
     /// Everything else.
     Plain,
+    /// The Dumpster: not a file on the desktop but the trash, drawn among them as IRIX drew
+    /// it. See [`dumpster`].
+    Dumpster,
+}
+
+/// The name the Dumpster is known by: in the state file, the selection and hit-testing.
+///
+/// Begins with a `/`, which no file name can contain, so a file on the desktop can never be
+/// mistaken for it -- not even one called "Dumpster".
+pub const DUMPSTER: &str = "/dumpster";
+
+/// The Dumpster, showing empty or full.
+///
+/// `files` is the trash's `files` directory -- what double-clicking it opens. Full is anything
+/// there at all, which is what the icon has to say: whether emptying it would do something.
+pub fn dumpster(files: &Path, full: bool) -> Entry {
+    // The freedesktop names for a trash can. A theme with no art for either -- wlrix's own has
+    // none yet -- leaves the drawn-in-code bin.
+    let icon_names = if full {
+        vec!["user-trash-full".to_owned(), "user-trash".to_owned()]
+    } else {
+        vec!["user-trash".to_owned()]
+    };
+    Entry {
+        path: files.to_path_buf(),
+        name: DUMPSTER.to_owned(),
+        label: "Dumpster".to_owned(),
+        kind: Kind::Dumpster,
+        icon_names,
+        launcher: None,
+    }
 }
 
 /// What a `.desktop` launcher says that the desktop needs in order to draw it.
@@ -174,6 +205,8 @@ fn icon_names(db: &Database, kind: Kind, name: &str, len: u64) -> Vec<String> {
         }
         // A launcher names its artwork itself; see `ui::paint`.
         Kind::Launcher => return Vec::new(),
+        // Never read from a directory; see `dumpster`.
+        Kind::Dumpster => return Vec::new(),
         Kind::Executable => by_name().unwrap_or(mime::EXECUTABLE),
         Kind::Plain if len == 0 => by_name().unwrap_or(mime::EMPTY),
         Kind::Plain => by_name().unwrap_or(mime::DEFAULT),
@@ -432,5 +465,22 @@ mod tests {
     #[test]
     fn a_missing_directory_is_an_empty_desktop() {
         assert!(read(Path::new("/nonexistent/wlrix-desktop-test")).is_empty());
+    }
+
+    #[test]
+    fn the_dumpster_shows_full_or_empty_and_no_file_can_be_it() {
+        let files = Path::new("/home/me/.local/share/Trash/files");
+        let full = dumpster(files, true);
+        assert_eq!(full.kind, Kind::Dumpster);
+        assert_eq!(full.path, files);
+        assert_eq!(full.icon_names, ["user-trash-full", "user-trash"]);
+        assert_eq!(dumpster(files, false).icon_names, ["user-trash"]);
+
+        // Its name is one a directory read can never produce, so a file called "Dumpster" --
+        // or "dumpster" -- stays a file.
+        let dir = scratch("dumpster-name");
+        fs::write(dir.join("dumpster"), "").unwrap();
+        fs::write(dir.join("Dumpster"), "").unwrap();
+        assert!(read(&dir).iter().all(|entry| entry.name != DUMPSTER));
     }
 }

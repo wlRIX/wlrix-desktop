@@ -30,6 +30,21 @@ pub fn trash_dir() -> Option<PathBuf> {
     crate::xdg::home().map(|home| home.join(".local/share/Trash"))
 }
 
+/// The trash's `files` directory, where trashed things sit: what the Dumpster opens.
+///
+/// Made if it is not there, so a fresh account's Dumpster opens on an empty folder rather than
+/// a missing one, and so it can be watched for the icon from the start.
+pub fn files_dir() -> Option<PathBuf> {
+    let files = trash_dir()?.join("files");
+    std::fs::create_dir_all(&files).ok()?;
+    Some(files)
+}
+
+/// Whether there is anything in `files`, for the Dumpster's full or empty icon.
+pub fn is_full(files: &Path) -> bool {
+    std::fs::read_dir(files).is_ok_and(|mut entries| entries.next().is_some())
+}
+
 /// Move `path` to the trash.
 ///
 /// The error is meant to be read: it says what was refused and why, since nothing else will
