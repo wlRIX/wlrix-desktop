@@ -136,6 +136,15 @@ impl Selection {
         self.drag.as_ref().is_some_and(|drag| drag.moved)
     }
 
+    /// Where the pointer is during a drag, past the threshold: what decides which icon, if any,
+    /// it is over and so would be dropped on.
+    pub fn drag_point(&self) -> Option<Point> {
+        self.drag
+            .as_ref()
+            .filter(|drag| drag.moved)
+            .map(|drag| drag.current)
+    }
+
     /// How far the dragged icons have traveled from where they were picked up.
     ///
     /// A delta rather than an absolute position, so a group stays rigid: every icon in the

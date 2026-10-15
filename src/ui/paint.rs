@@ -20,7 +20,7 @@ use std::path::Path;
 
 use crate::entries::Entry;
 use crate::icon_theme::Icons;
-use crate::layout::{Placed, Point};
+use crate::layout::Placed;
 use crate::menu::Menu;
 use crate::running::Running;
 use crate::select::Selection;
@@ -91,23 +91,55 @@ pub fn desktop(canvas: &mut Canvas, frame: &mut Frame) {
     // color -- the same gray -- shows through, so the bare desktop looks unchanged.
     canvas.clear_transparent();
 
+    // A drag, drawn as IRIX drew one (the IRIX Interactive Desktop UI Guidelines' figure of
+    // icon states): every dragged icon leaves a dark gray ghost in its cell and follows the
+    // pointer in selected yellow, and the icon under the pointer turns royal blue if it would
+    // take the drop.
+    let target = drop_target(frame.placed, frame.selection);
+
     for item in frame.placed {
-        // A dragged icon is drawn under the pointer rather than in its cell, so it follows
-        // the hand instead of jumping there on release. A whole selection moves by the same
-        // delta, which keeps the group rigid.
-        let delta = frame
-            .selection
-            .drag_delta()
-            .filter(|_| frame.selection.is_dragging(&item.entry.name))
-            .unwrap_or(Point::new(0, 0));
-        let cell = Rect::new(
-            item.rect.x + delta.x,
-            item.rect.y + delta.y,
-            item.rect.w,
-            item.rect.h,
-        );
-        let tint = tint_for(frame.selection, &item.entry.name);
-        icon(canvas, frame, item, cell, tint);
+        let home = Rect::new(item.rect.x, item.rect.y, item.rect.w, item.rect.h);
+        if frame.selection.is_dragging(&item.entry.name) {
+            icon_labeled(
+                canvas,
+                frame,
+                item,
+                home,
+                IconState::Ghost,
+                IconState::Selected,
+            );
+        } else if target.is_some_and(|target| std::ptr::eq(target, item)) {
+            let accepting = accepting(item);
+            icon(canvas, frame, &accepting, home, IconState::DropTarget);
+        } else {
+            let tint = tint_for(frame.selection, &item.entry.name);
+            icon(canvas, frame, item, home, tint);
+        }
+    }
+
+    // The dragged icons themselves, after everything else so nothing they pass over covers
+    // them. Drawn under the pointer rather than in their cells, so they follow the hand instead
+    // of jumping there on release; a whole selection moves by the same delta, which keeps the
+    // group rigid.
+    if let Some(delta) = frame.selection.drag_delta() {
+        for item in frame.placed {
+            if frame.selection.is_dragging(&item.entry.name) {
+                let cell = Rect::new(
+                    item.rect.x + delta.x,
+                    item.rect.y + delta.y,
+                    item.rect.w,
+                    item.rect.h,
+                );
+                icon_labeled(
+                    canvas,
+                    frame,
+                    item,
+                    cell,
+                    IconState::Selected,
+                    IconState::Normal,
+                );
+            }
+        }
     }
 
     // The rubber band goes last, over everything: it is a transient marker, not part of the
@@ -332,6 +364,30 @@ fn carpet_key(running: bool) -> &'static Path {
     })
 }
 
+/// The icon a drag would drop on: the topmost one under the pointer that is not itself being
+/// dragged and accepts a drop. `None` when nothing is being dragged.
+fn drop_target<'a>(placed: &'a [Placed], selection: &Selection) -> Option<&'a Placed> {
+    let point = selection.drag_point()?;
+    placed
+        .iter()
+        .rev()
+        .filter(|item| !selection.is_dragging(&item.entry.name))
+        .find(|item| item.rect.contains(point))
+        .filter(|item| item.entry.accepts_drop())
+}
+
+/// `item` as it looks while it would accept a drop. The Dumpster flings its lid open; anything
+/// else looks as it always does, and the tint alone says it will take the drop.
+fn accepting(item: &Placed) -> Placed {
+    let mut item = item.clone();
+    if item.entry.kind == crate::entries::Kind::Dumpster {
+        item.entry
+            .icon_names
+            .insert(0, crate::entries::DUMPSTER_OPEN.to_owned());
+    }
+    item
+}
+
 /// Which tint an icon takes. Selection wins over hover: a selected icon under the pointer
 /// should stay yellow rather than flicking to white as the pointer crosses it.
 fn tint_for(selection: &Selection, name: &str) -> IconState {
@@ -346,6 +402,22 @@ fn tint_for(selection: &Selection, name: &str) -> IconState {
 
 /// Draw one icon and its label inside `cell`.
 fn icon(canvas: &mut Canvas, frame: &mut Frame, item: &Placed, cell: Rect, tint: IconState) {
+    icon_labeled(canvas, frame, item, cell, tint, tint);
+}
+
+/// [`icon`], with the label in a state of its own.
+///
+/// For a drag, where the two part company: the name stays highlighted under the ghost, which is
+/// where the selection still is, and the copy following the pointer carries a plain one -- as
+/// in IRIX's figure of a drag, whose dragged image has an unhighlighted name.
+fn icon_labeled(
+    canvas: &mut Canvas,
+    frame: &mut Frame,
+    item: &Placed,
+    cell: Rect,
+    tint: IconState,
+    label_tint: IconState,
+) {
     // The icon square, centered across the cell and hard against its top.
     let size = frame.icon_size.min(cell.w).min(cell.h);
     let square = Rect::new(cell.x + (cell.w - size) / 2, cell.y, size, size);
@@ -382,7 +454,7 @@ fn icon(canvas: &mut Canvas, frame: &mut Frame, item: &Placed, cell: Rect, tint:
             cell.w,
             (cell.h - size - LABEL_GAP).max(0),
         ),
-        tint,
+        label_tint,
     );
 }
 
@@ -462,7 +534,7 @@ fn label(
 mod tests {
     use super::*;
     use crate::entries::{Entry, Kind};
-    use crate::layout::{Grid, Metrics, Rect as LayoutRect, Spot};
+    use crate::layout::{Grid, Metrics, Point, Rect as LayoutRect, Spot};
     use crate::menu::Menu;
     use wlrix_ui::Rgb;
 
@@ -1133,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dragged_icon_is_drawn_under_the_pointer() {
+    fn a_dragged_icon_is_drawn_under_the_pointer_and_leaves_a_ghost() {
         let Some(mut fonts) = fonts() else { return };
         let placed = placed(&["a.txt"]);
         let mut selection = Selection::default();
@@ -1145,11 +1217,60 @@ mod tests {
         let mut canvas = Canvas::new(&mut pixels, 1280, 800);
         desktop(&mut canvas, &mut frame(&mut fonts, &placed, &selection));
 
-        // The cell it came from is now bare.
-        assert_eq!(
-            painted(&canvas, placed[0].rect),
-            0,
-            "the icon should have moved, not been copied"
+        // The icon follows the pointer...
+        let moved = LayoutRect::new(
+            placed[0].rect.x - 300,
+            placed[0].rect.y + 200,
+            placed[0].rect.w,
+            placed[0].rect.h,
+        );
+        assert!(
+            painted(&canvas, moved) > 0,
+            "the icon should follow the pointer"
+        );
+        // ...and leaves its ghost behind, as IRIX did, until it is dropped.
+        assert!(
+            painted(&canvas, placed[0].rect) > 0,
+            "the cell it came from should hold its ghost"
+        );
+    }
+
+    /// How many pixels in `rect` are `color`.
+    fn pixels_of(canvas: &Canvas, rect: LayoutRect, color: Rgb) -> usize {
+        (rect.y..rect.y + rect.h)
+            .flat_map(|y| (rect.x..rect.x + rect.w).map(move |x| (x, y)))
+            .filter(|&(x, y)| canvas.get(x, y) == color)
+            .count()
+    }
+
+    #[test]
+    fn the_dumpster_turns_blue_under_a_drag_and_the_ghost_dark_gray() {
+        let Some(mut fonts) = fonts() else { return };
+        let mut placed = placed(&["a.txt", "trash"]);
+        // The second cell becomes the Dumpster, drawn from the code-drawn bin: no theme names,
+        // so the test does not depend on what this machine has installed.
+        placed[1].entry.kind = Kind::Dumpster;
+        placed[1].entry.name = crate::entries::DUMPSTER.to_owned();
+        let palette = wlrix_ui::palette::resolve(None).0;
+
+        let mut selection = Selection::default();
+        let start = Point::new(placed[0].rect.x + 8, placed[0].rect.y + 8);
+        selection.press(&placed, start, 0);
+        // Onto the Dumpster's cell.
+        let over = Point::new(placed[1].rect.x + 8, placed[1].rect.y + 8);
+        selection.motion(&placed, over);
+
+        let mut pixels = vec![0u8; 1280 * 800 * 4];
+        let mut canvas = Canvas::new(&mut pixels, 1280, 800);
+        desktop(&mut canvas, &mut frame(&mut fonts, &placed, &selection));
+
+        assert!(
+            pixels_of(&canvas, placed[1].rect, palette.icon_tint_drop) > 0,
+            "the Dumpster should be royal blue while it would take the drop"
+        );
+        assert!(
+            pixels_of(&canvas, placed[0].rect, palette.icon_tint_ghost) > 0,
+            "the dragged icon should leave a dark gray ghost"
         );
     }
 }

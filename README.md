@@ -22,6 +22,12 @@ selected.
 That replaced multiplying the whole icon by one color, which also tinted the drop shadow — olive under yellow — and drew
 the rest state as a flat gray where IRIX stippled.
 
+A drag has two more states, from the *IRIX Interactive Desktop User Interface Guidelines*' figure of icon states. Each
+dragged icon leaves a **dark gray ghost** in its cell, its name still highlighted there, and follows the pointer in
+selected yellow with a plain name. The icon under the pointer turns **royal blue** if it would accept the drop. Only
+the Dumpster does today, and it also flings its lid open (`wlrix-dumpster-open`). Both colors are palette roles,
+`iconTintGhost` and `iconTintDrop`.
+
 The type comes from the **file name alone**, through the shared-mime-info glob tables (`src/mime.rs`), with the same
 precedence wlRIX Files uses — a literal name, then the longest extension, then any other pattern — so the desktop and
 the file manager show the same picture for the same file. Contents are never read: sniffing would mean opening every

@@ -37,6 +37,19 @@ pub enum Kind {
 /// mistaken for it -- not even one called "Dumpster".
 pub const DUMPSTER: &str = "/dumpster";
 
+/// What the Dumpster shows while icons are dragged over it: the lid flung open, as IRIX's did.
+/// The wlrix icon theme's own name -- the spec has none for it -- and in front of the at-rest
+/// names, so a theme without it shows the Dumpster as it was, tinted.
+pub const DUMPSTER_OPEN: &str = "wlrix-dumpster-open";
+
+impl Entry {
+    /// Whether icons dragged over this one could be dropped on it. Only the Dumpster, today:
+    /// dropping on a folder to move into it is still to come.
+    pub fn accepts_drop(&self) -> bool {
+        self.kind == Kind::Dumpster
+    }
+}
+
 /// The Dumpster, showing empty or full.
 ///
 /// `files` is the trash's `files` directory -- what double-clicking it opens. Full is anything
