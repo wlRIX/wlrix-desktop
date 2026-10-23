@@ -35,6 +35,9 @@ pub struct Icons {
     resolved: HashMap<String, Option<PathBuf>>,
     /// The theme searched before `hicolor`. See the module comment.
     theme: String,
+    /// Whether each symbol file looked at is drawn in the carpet's frame; see
+    /// [`is_carpet_frame`].
+    registered: HashMap<PathBuf, bool>,
 }
 
 impl Icons {
@@ -124,6 +127,25 @@ impl Icons {
         self.images.load(&path, size)
     }
 
+    /// Load a file already resolved, at `size`.
+    pub fn load(&mut self, path: &Path, size: i32) -> Option<&Image> {
+        self.images.load(path, size)
+    }
+
+    /// Whether the file at `path` is an IRIX drawing in the magic carpet's own frame, to be laid
+    /// over the carpet 1:1 rather than shrunk onto it. See [`is_carpet_frame`].
+    pub fn is_registered(&mut self, path: &Path) -> bool {
+        if let Some(&known) = self.registered.get(path) {
+            return known;
+        }
+        let known = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+            && read_head(path).is_some_and(|head| is_carpet_frame(&head));
+        self.registered.insert(path.to_path_buf(), known);
+        known
+    }
+
     /// [`Self::first`] and load in one step.
     pub fn get_first(&mut self, icons: &[String], size: i32) -> Option<&Image> {
         let path = self.first(icons, size)?;
@@ -145,7 +167,70 @@ impl Icons {
     pub fn clear(&mut self) {
         self.images.clear();
         self.resolved.clear();
+        self.registered.clear();
     }
+}
+
+/// The first few kilobytes of a file, which is where an SVG's root element is.
+fn read_head(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut head = Vec::with_capacity(4096);
+    std::fs::File::open(path)
+        .ok()?
+        .take(4096)
+        .read_to_end(&mut head)
+        .ok()?;
+    Some(String::from_utf8_lossy(&head).into_owned())
+}
+
+/// Whether an SVG is in the IRIX carpet frame: a 50pt square root over a `0 0 50 50` view box.
+///
+/// Every IRIX icon export has that root, drawn at `scale(0.5)` in a 100-unit frame -- the magic
+/// carpets and an application's own symbol alike. IRIX laid the symbol over its carpet 1:1, in
+/// register, which is how a symbol can draw on the carpet itself: the Writer's pencil erases
+/// lines written on the carpet's paper. Any other icon, an application's ordinary theme icon, is
+/// shrunk and stood on the carpet instead. The icon catalog's `LegacySvg` in wlrix-apps applies
+/// the same rule, kept in step by hand.
+pub fn is_carpet_frame(svg: &str) -> bool {
+    let Some(start) = svg.find("<svg") else {
+        return false;
+    };
+    let Some(end) = svg[start..].find('>') else {
+        return false;
+    };
+    let root = &svg[start..start + end];
+    let numbers: Option<Vec<&str>> = attribute(root, "viewBox").map(|view| {
+        view.split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|part| !part.is_empty())
+            .collect()
+    });
+    attribute(root, "width") == Some("50pt")
+        && attribute(root, "height") == Some("50pt")
+        && numbers.as_deref() == Some(&["0", "0", "50", "50"][..])
+}
+
+/// The value of `name` in an element's attribute text, either quote style.
+fn attribute<'a>(element: &'a str, name: &str) -> Option<&'a str> {
+    let mut rest = element;
+    while let Some(at) = rest.find(name) {
+        let before = rest[..at].chars().next_back();
+        let after = rest[at + name.len()..].trim_start();
+        rest = &rest[at + name.len()..];
+        if !before.is_some_and(char::is_whitespace) {
+            continue;
+        }
+        let Some(value) = after.strip_prefix('=') else {
+            continue;
+        };
+        let value = value.trim_start();
+        let quote = value.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            continue;
+        }
+        let value = &value[1..];
+        return value.find(quote).map(|close| &value[..close]);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -195,6 +280,35 @@ mod tests {
         icons.resolve("wlrix-no-such-icon-anywhere", 64);
         icons.set_theme("Adwaita");
         assert_eq!(icons.resolved.len(), 1);
+    }
+
+    #[test]
+    fn an_irix_export_is_in_the_carpet_frame() {
+        assert!(is_carpet_frame(
+            r#"<svg width="50pt" height="50pt" viewBox="0 0 50 50" xml:space="preserve"><g/></svg>"#
+        ));
+        assert!(is_carpet_frame(
+            "<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox='0,0,50,50' height='50pt' width='50pt'>"
+        ));
+        // The carpets themselves are, which is the frame everything is registered against.
+        assert!(is_carpet_frame(include_str!(
+            "../assets/generic.exec.closed.svg"
+        )));
+    }
+
+    #[test]
+    fn anything_else_is_not() {
+        for svg in [
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"></svg>"#,
+            r#"<svg width="50pt" height="50pt" viewBox="0 0 100 100"></svg>"#,
+            r#"<svg width="50px" height="50px" viewBox="0 0 50 50"></svg>"#,
+            r#"<svg viewBox="0 0 50 50"></svg>"#,
+            // `stroke-width` is not `width`.
+            r#"<svg stroke-width="50pt" height="50pt" viewBox="0 0 50 50"></svg>"#,
+            "not svg at all",
+        ] {
+            assert!(!is_carpet_frame(svg), "{svg}");
+        }
     }
 
     #[test]

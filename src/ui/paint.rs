@@ -41,7 +41,8 @@ const LABEL_LINES: usize = 2;
 /// Padding around the label's highlight, so a selected name is not painted edge to edge.
 const LABEL_PAD: i32 = 2;
 
-/// How big an application's symbol is, as a fraction of the icon square.
+/// How big an application's symbol is, as a fraction of the icon square -- one drawn as an
+/// ordinary theme icon. An IRIX drawing is in the carpet's frame and covers the whole square.
 ///
 /// The rest of the square is the carpet it stands on. Eyeballed against the IRIX figure; easy
 /// to retune, and the only thing that decides how the two layers sit together.
@@ -333,10 +334,11 @@ fn application(
 
     // The carpet fills the square; the symbol stands on it.
     //
-    // The **carpet** carries the hover and selection tint, not the symbol: it is wlRIX's own
-    // artwork, so gray/white/yellow is exactly the IRIX rule, while an application's icon
-    // wants the colors it was drawn in. Without this a launcher would be the one thing on
-    // the desktop that does not react to the pointer at all.
+    // The **carpet** always carries the hover and selection tint: it is wlRIX's own artwork, so
+    // gray/white/yellow is exactly the IRIX rule. The symbol carries it only when it is an IRIX
+    // drawing too (below); an application's own icon wants the colors it was drawn in. Without
+    // the carpet's, such a launcher would be the one thing on the desktop that does not react
+    // to the pointer at all.
     let carpet = if running { CARPET_OPEN } else { CARPET_CLOSED };
     let Some(carpet) = frame.images.load_bytes(carpet_key(running), carpet, size) else {
         return false;
@@ -360,7 +362,21 @@ fn application(
     };
 
     let symbol_size = ((size as f32) * SYMBOL_SCALE).round() as i32;
-    if let Some(symbol) = frame.images.get(wanted, symbol_size) {
+    let Some(path) = frame.images.resolve(wanted, symbol_size) else {
+        return true;
+    };
+    // An IRIX drawing is in the carpet's own frame and goes over it 1:1, in register, and takes
+    // the tint with it -- the IRIX icon catalog turned a selected keyboard's white body yellow
+    // along with its carpet. Anything else is an application's ordinary icon: shrunk, stood on
+    // the carpet, and left in the colors it was drawn in. See `icon_theme::is_carpet_frame`.
+    let palette = frame.palette;
+    if frame.images.is_registered(&path) {
+        if let Some(symbol) = frame.images.load(&path, size) {
+            symbol
+                .in_state(tint, palette)
+                .draw(canvas, square.x, square.y);
+        }
+    } else if let Some(symbol) = frame.images.load(&path, symbol_size) {
         let bottom = square.y + ((size as f32) * SYMBOL_BASELINE).round() as i32;
         symbol.draw(
             canvas,
@@ -1365,5 +1381,62 @@ mod tests {
             pixels_of(&canvas, placed[0].rect, palette.icon_tint_ghost) > 0,
             "the dragged icon should leave a dark gray ghost"
         );
+    }
+
+    #[test]
+    fn an_irix_symbol_is_tinted_with_its_carpet_and_an_ordinary_icon_is_not() {
+        let Some(mut fonts) = fonts() else { return };
+        let dir = std::env::temp_dir().join(format!("wlrix-desktop-tint-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A white body in each: an IRIX drawing in the carpet's frame, without the namespace as
+        // exported, and an ordinary 48px icon.
+        let irix = dir.join("irix.svg");
+        std::fs::write(
+            &irix,
+            r##"<svg width="50pt" height="50pt" viewBox="0 0 50 50"><g transform="scale(0.5)"><rect x="0" y="0" width="12" height="12" fill="#fff"/></g></svg>"##,
+        )
+        .unwrap();
+        let plain = dir.join("plain.svg");
+        std::fs::write(
+            &plain,
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48"><rect x="18" y="0" width="12" height="12" fill="#fff"/></svg>"##,
+        )
+        .unwrap();
+
+        let grid = grid();
+        let mut placed = launcher("irix", irix.to_str(), None);
+        placed.extend(launcher("plain", plain.to_str(), None));
+        placed[1].entry.name = "plain".to_owned();
+        placed[1].rect = grid.slot_rect(1);
+        let mut selection = Selection::default();
+        selection.select_all(vec!["irix".to_owned(), "plain".to_owned()]);
+
+        let mut pixels = vec![0u8; 1280 * 800 * 4];
+        let mut canvas = Canvas::new(&mut pixels, 1280, 800);
+        desktop(&mut canvas, &mut frame(&mut fonts, &placed, &selection));
+        let palette = wlrix_ui::palette::DEFAULT;
+
+        // The IRIX body sits in the icon square's top-left corner, and is selection yellow.
+        let square = |rect: LayoutRect| LayoutRect::new(rect.x + (rect.w - 64) / 2, rect.y, 64, 64);
+        let corner = square(placed[0].rect);
+        assert!(
+            pixels_of(
+                &canvas,
+                LayoutRect::new(corner.x, corner.y, 6, 6),
+                palette.icon_tint_selected
+            ) > 0,
+            "the IRIX symbol should be tinted"
+        );
+        // The ordinary one, shrunk onto the carpet, keeps its white.
+        let top = square(placed[1].rect);
+        assert!(
+            pixels_of(
+                &canvas,
+                LayoutRect::new(top.x + 24, top.y + 4, 16, 12),
+                Rgb(0xffff_ffff)
+            ) > 0,
+            "the ordinary icon should keep its own white"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
