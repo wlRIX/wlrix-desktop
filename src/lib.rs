@@ -20,6 +20,7 @@ pub mod session;
 pub mod signals;
 pub mod sound;
 pub mod state;
+pub mod transfer;
 pub mod trash;
 pub mod ui;
 pub mod watch;

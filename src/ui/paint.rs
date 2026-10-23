@@ -154,6 +154,54 @@ pub fn desktop(canvas: &mut Canvas, frame: &mut Frame) {
     }
 }
 
+/// Where the dragged icons sit, together: the smallest rectangle around all their cells.
+///
+/// The size of the drag image the compositor carries; `None` when nothing is being dragged.
+pub fn drag_bounds(placed: &[Placed], selection: &Selection) -> Option<Rect> {
+    let mut cells = placed
+        .iter()
+        .filter(|item| selection.is_dragging(&item.entry.name))
+        .map(|item| item.rect);
+    let first = cells.next()?;
+    let (mut left, mut top) = (first.x, first.y);
+    let (mut right, mut bottom) = (first.x + first.w, first.y + first.h);
+    for cell in cells {
+        left = left.min(cell.x);
+        top = top.min(cell.y);
+        right = right.max(cell.x + cell.w);
+        bottom = bottom.max(cell.y + cell.h);
+    }
+    Some(Rect::new(left, top, right - left, bottom - top))
+}
+
+/// The drag image: the dragged icons as they follow the pointer, for the compositor to carry.
+///
+/// Drawn into a canvas the size of [`drag_bounds`], each icon where it sits within them, so a
+/// group keeps its shape. The same look as the icons drawn under the pointer before a drag
+/// left the desktop -- selected yellow with a plain name -- so nothing changes as the drag
+/// becomes one the rest of the desktop can see.
+pub fn drag_image(canvas: &mut Canvas, frame: &mut Frame, bounds: Rect) {
+    canvas.clear_transparent();
+    for item in frame.placed {
+        if frame.selection.is_dragging(&item.entry.name) {
+            let cell = Rect::new(
+                item.rect.x - bounds.x,
+                item.rect.y - bounds.y,
+                item.rect.w,
+                item.rect.h,
+            );
+            icon_labeled(
+                canvas,
+                frame,
+                item,
+                cell,
+                IconState::Selected,
+                IconState::Normal,
+            );
+        }
+    }
+}
+
 /// Draw the desktop menu: a raised panel, a centered title, and the rows.
 ///
 /// The geometry and the colors are the compositor's window menu
@@ -1233,6 +1281,51 @@ mod tests {
             painted(&canvas, placed[0].rect) > 0,
             "the cell it came from should hold its ghost"
         );
+    }
+
+    #[test]
+    fn the_drag_image_holds_the_dragged_icons_and_nothing_else() {
+        let Some(mut fonts) = fonts() else { return };
+        let placed = placed(&["a.txt", "b.txt", "c.txt"]);
+        let mut selection = Selection::default();
+        // Band the first two, then drag them.
+        selection.press(&placed, Point::new(40, 40), 0);
+        selection.motion(
+            &placed,
+            Point::new(
+                placed[1].rect.x + 1,
+                placed[1].rect.y + placed[1].rect.h - 1,
+            ),
+        );
+        selection.release(&placed, &grid(), false);
+        let start = Point::new(placed[0].rect.x + 8, placed[0].rect.y + 8);
+        selection.press(&placed, start, 10_000);
+        selection.motion(&placed, Point::new(start.x - 200, start.y));
+
+        let bounds = drag_bounds(&placed, &selection).expect("two icons are being dragged");
+        assert_eq!(bounds.w, placed[0].rect.w);
+        assert_eq!(
+            bounds.h,
+            placed[1].rect.y + placed[1].rect.h - placed[0].rect.y
+        );
+
+        let mut pixels = vec![0u8; (bounds.w * bounds.h * 4) as usize];
+        let mut canvas = Canvas::new(&mut pixels, bounds.w, bounds.h);
+        drag_image(
+            &mut canvas,
+            &mut frame(&mut fonts, &placed, &selection),
+            bounds,
+        );
+        let top = LayoutRect::new(0, 0, bounds.w, placed[0].rect.h);
+        let bottom = LayoutRect::new(0, placed[1].rect.y - bounds.y, bounds.w, placed[1].rect.h);
+        assert!(painted(&canvas, top) > 0);
+        assert!(painted(&canvas, bottom) > 0);
+    }
+
+    #[test]
+    fn nothing_dragged_has_no_drag_image() {
+        let placed = placed(&["a.txt"]);
+        assert_eq!(drag_bounds(&placed, &Selection::default()), None);
     }
 
     /// How many pixels in `rect` are `color`.

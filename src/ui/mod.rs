@@ -27,8 +27,14 @@ use std::time::Duration;
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
-    delegate_seat, delegate_shm,
+    data_device_manager::{
+        DataDeviceManagerState, WritePipe,
+        data_device::{DataDevice, DataDeviceData, DataDeviceHandler},
+        data_offer::{DataOfferHandler, DragOffer},
+        data_source::{DataSourceHandler, DragSource},
+    },
+    delegate_compositor, delegate_data_device, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     reexports::calloop::{EventLoop, Interest, Mode, PostAction, generic::Generic},
     reexports::calloop_wayland_source::WaylandSource,
@@ -45,14 +51,19 @@ use smithay_client_toolkit::{
             LayerSurfaceConfigure,
         },
     },
-    shm::{Shm, ShmHandler, slot::SlotPool},
+    shm::{
+        Shm, ShmHandler,
+        slot::{Buffer, SlotPool},
+    },
 };
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
     backend::WaylandError,
     globals::registry_queue_init,
     protocol::{
-        wl_output::WlOutput, wl_pointer::WlPointer, wl_seat::WlSeat, wl_shm, wl_surface::WlSurface,
+        wl_data_device::WlDataDevice, wl_data_device_manager::DndAction,
+        wl_data_source::WlDataSource, wl_output::WlOutput, wl_pointer::WlPointer, wl_seat::WlSeat,
+        wl_shm, wl_surface::WlSurface,
     },
 };
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
@@ -68,6 +79,7 @@ use crate::menu::{Action, Actions as MenuActions, Menu};
 use crate::running::Running;
 use crate::select::Selection;
 use crate::state::State;
+use crate::transfer::Payload;
 use crate::watch::Watch;
 use wlrix_ui::canvas::Canvas;
 use wlrix_ui::palette::Palette;
@@ -76,6 +88,57 @@ use wlrix_ui::text::{Face, Fonts};
 /// `wl_pointer`'s buttons, from `linux/input-event-codes.h`.
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
+
+/// How to move a surface relative to where it was, by the `wl_surface` version it has.
+///
+/// Before version 5 the move rides on `attach`'s x and y. From 5 on that is a protocol error
+/// -- the compositor disconnects the client for it, which took the whole desktop down the first
+/// time a drag image was offset -- and the move is its own request, `offset`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IconPlacement {
+    /// What to pass `wl_surface.offset`, when the surface has it.
+    offset: Option<(i32, i32)>,
+    /// What to pass `wl_surface.attach` as x and y.
+    attach: (i32, i32),
+}
+
+impl IconPlacement {
+    fn for_version(version: u32, x: i32, y: i32) -> Self {
+        if version >= 5 {
+            Self {
+                offset: Some((x, y)),
+                attach: (0, 0),
+            }
+        } else {
+            Self {
+                offset: None,
+                attach: (x, y),
+            }
+        }
+    }
+}
+
+/// A drag of desktop icons that the compositor is carrying, as a Wayland drag-and-drop.
+///
+/// Every icon drag becomes one as soon as it passes the threshold. The desktop is a surface
+/// under every window, so it cannot tell by itself whether the pointer is over bare desktop or
+/// over a window -- but the compositor can, and with a real drag it says so: the drag comes
+/// back to the desktop's own surface when it is over bare desktop, and goes to the window when
+/// it is over one. Dropped back on the desktop, the drag is the move it always was; dropped on
+/// a window, it hands that application the files.
+struct Outgoing {
+    /// The offer. Dropping it cancels the drag, so it lives exactly as long as the drag does.
+    source: DragSource,
+    payload: Payload,
+    /// The drag image's surface, which the compositor draws under the pointer.
+    icon: WlSurface,
+    /// Its buffer, kept so the image is not released while it is on screen.
+    _image: Option<Buffer>,
+    /// Whether the drag is over the desktop's own surface right now.
+    over_desktop: bool,
+    /// Whether it was dropped there -- as a move of the icons, already carried out.
+    landed: bool,
+}
 
 /// The whole desktop's state.
 pub struct Desktop {
@@ -99,6 +162,15 @@ pub struct Desktop {
     height: u32,
 
     pointer: Option<WlPointer>,
+    /// The serial of the last button press, which is what a drag has to be started with.
+    press_serial: u32,
+
+    /// Drag-and-drop with other clients. Optional: without it, icons still move about the
+    /// desktop the old way, they just cannot leave it.
+    data_devices: Option<DataDeviceManagerState>,
+    data_device: Option<DataDevice>,
+    /// The drag under way, while the compositor carries one of ours.
+    outgoing: Option<Outgoing>,
 
     fonts: Fonts,
     directory: PathBuf,
@@ -199,6 +271,18 @@ pub fn run() -> Result<(), String> {
     // Grown on demand when the real output size arrives; this is only a starting guess.
     let pool = SlotPool::new(1920 * 1080 * 4, &shm)
         .map_err(|err| format!("could not create a buffer pool: {err}"))?;
+    // What lets an icon be dragged into another application. A compositor without it still
+    // gets a desktop whose icons move about on it.
+    let data_devices = match DataDeviceManagerState::bind(&globals, &qh) {
+        Ok(state) => Some(state),
+        Err(err) => {
+            eprintln!(
+                "wlrix-desktop: no wl_data_device_manager ({err}); icons cannot be dragged \
+                 into other applications"
+            );
+            None
+        }
+    };
 
     // Duplicated before the watch moves into the struct: the loop source owns an fd of its
     // own, and the `Watch` keeps the one it reads from.
@@ -227,6 +311,10 @@ pub fn run() -> Result<(), String> {
         width: 0,
         height: 0,
         pointer: None,
+        press_serial: 0,
+        data_devices,
+        data_device: None,
+        outgoing: None,
         fonts,
         directory,
         watch,
@@ -334,6 +422,12 @@ pub fn run() -> Result<(), String> {
 
     loop {
         if let Err(err) = event_loop.dispatch(Duration::from_secs(1), &mut desktop) {
+            // Asked first: a compositor that disconnects us for a protocol error also leaves the
+            // socket closed, and without this the desktop's own bug would read as a logout and
+            // vanish with exit status 0 and nothing in the log.
+            if let Some(err) = health.protocol_error() {
+                return Err(format!("protocol error: {err}"));
+            }
             return match health.flush() {
                 // The compositor going away is the ordinary end of a Wayland client's life,
                 // not a failure: logging out from the desktop's own menu looks exactly like
@@ -777,6 +871,155 @@ impl Desktop {
         });
     }
 
+    /// Drop the dragged icons at `point` on the desktop: onto the Dumpster, which throws them
+    /// away, or anywhere else, which moves them there.
+    fn drop_icons(&mut self, point: Point) {
+        // Asked before the release, which ends the drag: is the pointer over the Dumpster, with
+        // icons that are not the Dumpster being dragged onto it.
+        let into_dumpster = self.selection.is_dragging_any()
+            && !self.selection.is_dragging(crate::entries::DUMPSTER)
+            && self.placed.iter().any(|item| {
+                item.entry.kind == crate::entries::Kind::Dumpster && item.rect.contains(point)
+            });
+        let grid = self.grid();
+        // A drop can move several icons at once, when a rubber band selected them and one of
+        // them was then dragged.
+        let dropped = self
+            .selection
+            .release(&self.placed, &grid, self.snap_to_grid);
+        if into_dumpster && !dropped.is_empty() {
+            // Thrown away rather than moved: they keep no position, since they are no longer
+            // on the desktop.
+            let names: Vec<String> = dropped.into_iter().map(|drop| drop.name).collect();
+            self.throw_away(&names, "wlrix-drag-to-trash");
+        } else if !dropped.is_empty() {
+            for drop in dropped {
+                self.saved.set_spot(&drop.name, drop.spot);
+            }
+            self.relayout();
+            crate::sound::play("wlrix-icon-shift");
+        }
+        self.dirty = true;
+    }
+
+    /// Hand the drag under way to the compositor, as a Wayland drag-and-drop. See [`Outgoing`].
+    ///
+    /// Without a data device -- a compositor that has none -- this does nothing, and the drag
+    /// carries on as a move on the desktop alone.
+    fn start_drag(&mut self, qh: &QueueHandle<Self>) {
+        let (Some(manager), Some(device), Some(layer)) = (
+            self.data_devices.as_ref(),
+            self.data_device.as_ref(),
+            self.layer.as_ref(),
+        ) else {
+            return;
+        };
+
+        // The files to hand over. The desktop's own icons travel as nothing; see
+        // `crate::transfer`.
+        let paths = self
+            .selection
+            .dragged()
+            .iter()
+            .filter(|name| !crate::entries::is_builtin(name))
+            .filter_map(|name| self.entries.iter().find(|entry| &entry.name == name))
+            .map(|entry| entry.path.clone())
+            .collect();
+        let payload = Payload::new(paths);
+
+        // Copy or move, the target's choice -- the file manager moves unless told otherwise,
+        // the icon catalog only ever copies, since it keeps a reference and nothing else.
+        let source = manager.create_drag_and_drop_source(
+            qh,
+            payload.mime_types(),
+            DndAction::Copy | DndAction::Move,
+        );
+        let icon = self.compositor.create_surface(qh);
+        source.start_drag(device, layer.wl_surface(), Some(&icon), self.press_serial);
+        // Drawn after the request, which is when the surface takes its role.
+        let image = self.draw_drag_image(&icon);
+
+        self.selection.carry();
+        self.outgoing = Some(Outgoing {
+            source,
+            payload,
+            icon,
+            _image: image,
+            over_desktop: true,
+            landed: false,
+        });
+        self.dirty = true;
+    }
+
+    /// Draw the dragged icons onto `icon`, placed so the point that was grabbed sits under the
+    /// pointer.
+    fn draw_drag_image(&mut self, icon: &WlSurface) -> Option<Buffer> {
+        let bounds = paint::drag_bounds(&self.placed, &self.selection)?;
+        let grab = self.selection.drag_origin()?;
+        let (buffer, pixels) = self
+            .pool
+            .create_buffer(bounds.w, bounds.h, bounds.w * 4, wl_shm::Format::Argb8888)
+            .map_err(|err| eprintln!("wlrix-desktop: could not get a buffer for the drag: {err}"))
+            .ok()?;
+
+        let mut canvas = Canvas::new(pixels, bounds.w, bounds.h);
+        paint::drag_image(
+            &mut canvas,
+            &mut paint::Frame {
+                palette: self.palette,
+                fonts: &mut self.fonts,
+                images: &mut self.images,
+                placed: &self.placed,
+                selection: &self.selection,
+                running: &self.running,
+                menu: None,
+                icon_size: self.metrics.icon,
+            },
+            bounds,
+        );
+
+        // The image's corner goes up and left of the pointer by however far into the icons the
+        // press landed.
+        let placement =
+            IconPlacement::for_version(icon.version(), bounds.x - grab.x, bounds.y - grab.y);
+        if let Some((x, y)) = placement.offset {
+            icon.offset(x, y);
+        }
+        let (x, y) = placement.attach;
+        icon.attach(Some(buffer.wl_buffer()), x, y);
+        icon.damage_buffer(0, 0, bounds.w, bounds.h);
+        icon.commit();
+        Some(buffer)
+    }
+
+    /// The drag is over, one way or another. Unless it came back and was dropped on the
+    /// desktop, nothing here moves: either another application took the files -- and moving
+    /// them is the file system's business, which the watch notices -- or nobody did.
+    fn end_drag(&mut self, source: &WlDataSource) {
+        if self
+            .outgoing
+            .as_ref()
+            .is_none_or(|outgoing| outgoing.source.inner() != source)
+        {
+            return;
+        }
+        let Some(outgoing) = self.outgoing.take() else {
+            return;
+        };
+        outgoing.icon.destroy();
+        if !outgoing.landed {
+            self.selection.cancel_drag();
+        }
+        self.dirty = true;
+    }
+
+    /// Whether `surface` is the desktop's own.
+    fn is_desktop(&self, surface: &WlSurface) -> bool {
+        self.layer
+            .as_ref()
+            .is_some_and(|layer| layer.wl_surface() == surface)
+    }
+
     /// Paint, if anything changed.
     fn draw_if_dirty(&mut self) {
         if !self.dirty {
@@ -1036,6 +1279,13 @@ impl SeatHandler for Desktop {
                 Err(err) => eprintln!("wlrix-desktop: no pointer: {err}"),
             }
         }
+        // The seat's drag-and-drop half, which a drag off the desktop is started on.
+        if capability == Capability::Pointer
+            && self.data_device.is_none()
+            && let Some(manager) = self.data_devices.as_ref()
+        {
+            self.data_device = Some(manager.get_data_device(qh, &seat));
+        }
     }
 
     fn remove_capability(
@@ -1059,7 +1309,7 @@ impl PointerHandler for Desktop {
     fn pointer_frame(
         &mut self,
         _c: &Connection,
-        _q: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         _pointer: &WlPointer,
         events: &[PointerEvent],
     ) {
@@ -1087,6 +1337,11 @@ impl PointerHandler for Desktop {
                     let dragged = self.selection.motion(&self.placed, point);
                     let hovered = self.selection.hover(&self.placed, point);
                     self.dirty |= dragged || hovered;
+                    // Past the threshold, the drag is handed to the compositor, so it can
+                    // leave the desktop for another application.
+                    if self.selection.is_dragging_any() && !self.selection.is_carried() {
+                        self.start_drag(qh);
+                    }
                 }
                 PointerEventKind::Leave { .. } => {
                     self.dirty |= self.selection.leave();
@@ -1095,7 +1350,13 @@ impl PointerHandler for Desktop {
                 PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
                     self.open_menu(point);
                 }
-                PointerEventKind::Press { button, time, .. } if button == BTN_LEFT => {
+                PointerEventKind::Press {
+                    button,
+                    time,
+                    serial,
+                } if button == BTN_LEFT => {
+                    // A drag can only be started with the serial of the press that began it.
+                    self.press_serial = serial;
                     // With a menu open, a press either chooses a row or puts the menu away.
                     // Either way it does not reach the desktop: clicking "Remove" should not
                     // also start a rubber band underneath it.
@@ -1114,38 +1375,185 @@ impl PointerHandler for Desktop {
                     }
                 }
                 PointerEventKind::Release { button, .. } if button == BTN_LEFT => {
-                    // Asked before the release, which ends the drag: is the pointer over the
-                    // Dumpster, with icons that are not the Dumpster being dragged onto it.
-                    let into_dumpster = self.selection.is_dragging_any()
-                        && !self.selection.is_dragging(crate::entries::DUMPSTER)
-                        && self.placed.iter().any(|item| {
-                            item.entry.kind == crate::entries::Kind::Dumpster
-                                && item.rect.contains(point)
-                        });
-                    let grid = self.grid();
-                    // A drop can move several icons at once, when a rubber band selected them
-                    // and one of them was then dragged.
-                    let dropped = self
-                        .selection
-                        .release(&self.placed, &grid, self.snap_to_grid);
-                    if into_dumpster && !dropped.is_empty() {
-                        // Thrown away rather than moved: they keep no position, since they
-                        // are no longer on the desktop.
-                        let names: Vec<String> =
-                            dropped.into_iter().map(|drop| drop.name).collect();
-                        self.throw_away(&names, "wlrix-drag-to-trash");
-                    } else if !dropped.is_empty() {
-                        for drop in dropped {
-                            self.saved.set_spot(&drop.name, drop.spot);
-                        }
-                        self.relayout();
-                        crate::sound::play("wlrix-icon-shift");
+                    // A Wayland drag takes the pointer, so a release still arriving here means
+                    // the compositor never started the one asked for. Let it go, and finish the
+                    // drag the old way, on the desktop.
+                    if let Some(outgoing) = self.outgoing.take() {
+                        outgoing.icon.destroy();
                     }
-                    self.dirty = true;
+                    self.drop_icons(point);
                 }
                 _ => {}
             }
         }
+    }
+}
+
+// --- drag-and-drop ----------------------------------------------------------------------
+//
+// The desktop is a drop target only for its own drags, coming back to it: that is a move of the
+// icons. Another application's drag is turned down -- dropping files onto the desktop to copy
+// them there is still to come.
+
+/// The drag currently over one of our surfaces, if any.
+fn drag_offer(device: &WlDataDevice) -> Option<DragOffer> {
+    device.data::<DataDeviceData>()?.drag_offer()
+}
+
+impl DataDeviceHandler for Desktop {
+    fn enter(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        device: &WlDataDevice,
+        x: f64,
+        y: f64,
+        surface: &WlSurface,
+    ) {
+        let Some(offer) = drag_offer(device) else {
+            return;
+        };
+        let ours = self.is_desktop(surface)
+            && self.outgoing.is_some()
+            && offer.with_mime_types(|types| types.iter().any(|t| t == crate::transfer::INTERNAL));
+        if !ours {
+            offer.accept_mime_type(offer.serial, None);
+            offer.set_actions(DndAction::empty(), DndAction::empty());
+            return;
+        }
+
+        // Back over bare desktop: a move, wherever it lands.
+        offer.accept_mime_type(offer.serial, Some(crate::transfer::INTERNAL.to_owned()));
+        offer.set_actions(DndAction::Move, DndAction::Move);
+        if let Some(outgoing) = self.outgoing.as_mut() {
+            outgoing.over_desktop = true;
+        }
+        self.dirty |= self
+            .selection
+            .motion(&self.placed, Point::new(x as i32, y as i32));
+    }
+
+    fn leave(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _device: &WlDataDevice) {
+        if let Some(outgoing) = self.outgoing.as_mut()
+            && outgoing.over_desktop
+        {
+            outgoing.over_desktop = false;
+            // Over a window now: nothing on the desktop is a drop target.
+            self.dirty |= self.selection.drag_left();
+        }
+    }
+
+    fn motion(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _device: &WlDataDevice,
+        x: f64,
+        y: f64,
+    ) {
+        if self
+            .outgoing
+            .as_ref()
+            .is_some_and(|outgoing| outgoing.over_desktop)
+        {
+            self.dirty |= self
+                .selection
+                .motion(&self.placed, Point::new(x as i32, y as i32));
+        }
+    }
+
+    fn selection(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _device: &WlDataDevice) {}
+
+    fn drop_performed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, device: &WlDataDevice) {
+        let Some(offer) = drag_offer(device) else {
+            return;
+        };
+        let Some(outgoing) = self
+            .outgoing
+            .as_mut()
+            .filter(|outgoing| outgoing.over_desktop)
+        else {
+            return;
+        };
+        outgoing.landed = true;
+        // Nothing to read: the icons and where they go are all here already.
+        offer.finish();
+        offer.destroy();
+        self.drop_icons(Point::new(offer.x as i32, offer.y as i32));
+    }
+}
+
+impl DataOfferHandler for Desktop {
+    fn source_actions(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _offer: &mut DragOffer,
+        _actions: DndAction,
+    ) {
+    }
+
+    fn selected_action(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _offer: &mut DragOffer,
+        _actions: DndAction,
+    ) {
+    }
+}
+
+impl DataSourceHandler for Desktop {
+    fn accept_mime(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _source: &WlDataSource,
+        _mime: Option<String>,
+    ) {
+    }
+
+    fn send_request(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        source: &WlDataSource,
+        mime: String,
+        mut pipe: WritePipe,
+    ) {
+        use std::io::Write;
+        let Some(bytes) = self
+            .outgoing
+            .as_ref()
+            .filter(|outgoing| outgoing.source.inner() == source)
+            .and_then(|outgoing| outgoing.payload.bytes_for(&mime))
+        else {
+            return;
+        };
+        // A few lines of paths, well inside a pipe's buffer, so this does not block the loop.
+        // A target that hung up first is its own concern.
+        if let Err(err) = pipe.write_all(&bytes) {
+            eprintln!("wlrix-desktop: could not hand over the dragged files: {err}");
+        }
+    }
+
+    fn cancelled(&mut self, _c: &Connection, _q: &QueueHandle<Self>, source: &WlDataSource) {
+        self.end_drag(source);
+    }
+
+    fn dnd_dropped(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _source: &WlDataSource) {}
+
+    fn dnd_finished(&mut self, _c: &Connection, _q: &QueueHandle<Self>, source: &WlDataSource) {
+        self.end_drag(source);
+    }
+
+    fn action(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _source: &WlDataSource,
+        _action: DndAction,
+    ) {
     }
 }
 
@@ -1170,6 +1578,7 @@ delegate_seat!(Desktop);
 delegate_pointer!(Desktop);
 delegate_layer!(Desktop);
 delegate_registry!(Desktop);
+delegate_data_device!(Desktop);
 
 /// The scheme `config` names, or the default if it names nothing this build ships.
 ///
@@ -1196,4 +1605,26 @@ fn resolve_palette(config: &Config) -> &'static Palette {
         eprintln!("wlrix-desktop: {why}; using {}", palette.id);
     }
     palette
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IconPlacement;
+
+    #[test]
+    fn a_new_surface_is_moved_with_offset_and_never_with_attach() {
+        // A non-zero attach on a version 5 surface is the protocol error that killed the desktop.
+        for version in [5, 6] {
+            let placement = IconPlacement::for_version(version, -40, -12);
+            assert_eq!(placement.attach, (0, 0));
+            assert_eq!(placement.offset, Some((-40, -12)));
+        }
+    }
+
+    #[test]
+    fn an_old_surface_is_moved_with_attach() {
+        let placement = IconPlacement::for_version(4, -40, -12);
+        assert_eq!(placement.attach, (-40, -12));
+        assert_eq!(placement.offset, None);
+    }
 }

@@ -174,8 +174,14 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 /// Everything outside the unreserved set is escaped, except `/` -- the spec keeps separators
 /// readable, and every implementation reads them that way.
 fn percent_encode(path: &str) -> String {
+    percent_encode_bytes(path.as_bytes())
+}
+
+/// [`percent_encode`] over raw bytes, for a path that need not be UTF-8: a `file://` URI
+/// carries the bytes the file system has, whatever encoding they are in.
+pub(crate) fn percent_encode_bytes(path: &[u8]) -> String {
     let mut out = String::with_capacity(path.len());
-    for byte in path.bytes() {
+    for &byte in path {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
                 out.push(byte as char)

@@ -28,6 +28,15 @@ selected yellow with a plain name. The icon under the pointer turns **royal blue
 the Dumpster does today, and it also flings its lid open (`wlrix-dumpster-open`). Both colors are palette roles,
 `iconTintGhost` and `iconTintDrop`.
 
+**A drag can leave the desktop.** Once it passes the threshold, an icon drag is a real Wayland drag-and-drop, with the
+dragged icons as its drag image, so it follows the pointer over windows too. The desktop sits under every window and
+cannot tell bare desktop from a window by itself; the compositor can, and sends the drag back to the desktop's surface
+over bare desktop. Dropped there, it is the move (or the trip to the Dumpster) it always was. Dropped on another
+application, that application gets the files as `text/uri-list` and plain paths, and chooses whether to copy or move
+them: wlRIX Files, for one, or the Icon Catalog, which keeps a launcher on one of its pages. The home folder and the
+Dumpster travel as nothing, so no stray drag can move a home directory. Drops from other applications onto the desktop
+are turned down for now. Without a `wl_data_device_manager`, icons simply move about the desktop as before.
+
 The type comes from the **file name alone**, through the shared-mime-info glob tables (`src/mime.rs`), with the same
 precedence wlRIX Files uses — a literal name, then the longest extension, then any other pattern — so the desktop and
 the file manager show the same picture for the same file. Contents are never read: sniffing would mean opening every

@@ -49,6 +49,13 @@ struct Drag {
     current: Point,
     /// Whether the threshold has been passed.
     moved: bool,
+    /// Whether the compositor is carrying the drag, as a Wayland drag-and-drop with a drag
+    /// image of its own. The desktop then stops drawing the icons under the pointer -- the
+    /// compositor's image already follows it, over windows too -- and keeps only the ghosts.
+    carried: bool,
+    /// Whether the pointer has gone off the desktop onto a window, mid-drag. Nothing on the
+    /// desktop is then under it, so nothing should light up as a drop target.
+    away: bool,
 }
 
 /// A rubber band being dragged out over the desktop.
@@ -141,8 +148,51 @@ impl Selection {
     pub fn drag_point(&self) -> Option<Point> {
         self.drag
             .as_ref()
-            .filter(|drag| drag.moved)
+            .filter(|drag| drag.moved && !drag.away)
             .map(|drag| drag.current)
+    }
+
+    /// Every icon being dragged, past the threshold. Empty otherwise.
+    pub fn dragged(&self) -> &[String] {
+        self.drag
+            .as_ref()
+            .filter(|drag| drag.moved)
+            .map_or(&[], |drag| drag.names.as_slice())
+    }
+
+    /// The point the press that started the drag landed on.
+    pub fn drag_origin(&self) -> Option<Point> {
+        self.drag.as_ref().map(|drag| drag.press)
+    }
+
+    /// Hand the drag to the compositor: from here the icons under the pointer are its drag
+    /// image, not something this surface draws. See [`Drag::carried`].
+    pub fn carry(&mut self) {
+        if let Some(drag) = self.drag.as_mut() {
+            drag.carried = true;
+        }
+    }
+
+    /// Whether the compositor is carrying the drag.
+    pub fn is_carried(&self) -> bool {
+        self.drag.as_ref().is_some_and(|drag| drag.carried)
+    }
+
+    /// The pointer left the desktop for a window, mid-drag.
+    pub fn drag_left(&mut self) -> bool {
+        match self.drag.as_mut() {
+            Some(drag) if !drag.away => {
+                drag.away = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The drag ended somewhere else -- another application took it, or nobody did. Nothing
+    /// on the desktop moves; the selection stays as it was, so the icons are still picked.
+    pub fn cancel_drag(&mut self) -> bool {
+        self.drag.take().is_some_and(|drag| drag.moved)
     }
 
     /// How far the dragged icons have traveled from where they were picked up.
@@ -150,7 +200,10 @@ impl Selection {
     /// A delta rather than an absolute position, so a group stays rigid: every icon in the
     /// drag moves by the same amount.
     pub fn drag_delta(&self) -> Option<Point> {
-        let drag = self.drag.as_ref().filter(|drag| drag.moved)?;
+        let drag = self
+            .drag
+            .as_ref()
+            .filter(|drag| drag.moved && !drag.carried)?;
         Some(Point::new(
             drag.current.x - drag.press.x,
             drag.current.y - drag.press.y,
@@ -262,6 +315,8 @@ impl Selection {
             press: point,
             current: point,
             moved: false,
+            carried: false,
+            away: false,
         });
         Pressed {
             changed,
@@ -295,6 +350,7 @@ impl Selection {
             return false;
         };
         drag.current = point;
+        drag.away = false;
         if drag.moved {
             return true;
         }
@@ -795,6 +851,71 @@ mod tests {
         selection.retain_only(&["a".to_owned()]);
         assert!(selection.is_dragging("a"), "a should still be moving");
         assert!(!selection.is_dragging("b"));
+    }
+
+    // --- a drag the compositor carries ------------------------------------------------
+
+    #[test]
+    fn a_carried_drag_stops_drawing_the_icons_under_the_pointer_but_still_drops() {
+        // The compositor's drag image follows the pointer instead, so the desktop's own copy
+        // would be a second image. Where the drop lands is unchanged.
+        let placed = placed(&["a"]);
+        let mut selection = Selection::default();
+        let start = center(&placed[0]);
+        press(&mut selection, &placed, start);
+        selection.motion(&placed, Point::new(start.x - 40, start.y + 40));
+
+        selection.carry();
+        assert!(selection.is_carried());
+        assert_eq!(selection.drag_delta(), None);
+        assert!(selection.is_dragging("a"), "the ghost stays");
+        assert_eq!(selection.dragged(), ["a"]);
+
+        let dropped = selection.release(&placed, &grid(), false);
+        assert_eq!(dropped.len(), 1);
+    }
+
+    #[test]
+    fn off_the_desktop_nothing_is_a_drop_target_until_it_comes_back() {
+        let placed = placed(&["a"]);
+        let mut selection = Selection::default();
+        let start = center(&placed[0]);
+        press(&mut selection, &placed, start);
+        selection.motion(&placed, Point::new(start.x - 40, start.y));
+
+        assert!(selection.drag_left());
+        assert_eq!(selection.drag_point(), None);
+        selection.motion(&placed, Point::new(start.x - 50, start.y));
+        assert_eq!(
+            selection.drag_point(),
+            Some(Point::new(start.x - 50, start.y))
+        );
+    }
+
+    #[test]
+    fn a_drag_taken_elsewhere_moves_nothing_and_keeps_the_selection() {
+        let placed = placed(&["a", "b"]);
+        let mut selection = Selection::default();
+        press(&mut selection, &placed, empty());
+        selection.motion(&placed, corner(&placed[1]));
+        selection.release(&placed, &grid(), false);
+
+        let start = center(&placed[0]);
+        press(&mut selection, &placed, start);
+        selection.motion(&placed, Point::new(start.x - 200, start.y));
+        assert!(selection.cancel_drag());
+
+        assert!(selection.release(&placed, &grid(), false).is_empty());
+        assert_eq!(selection.selected().len(), 2);
+        assert!(!selection.is_dragging("a"));
+    }
+
+    #[test]
+    fn nothing_is_dragged_until_the_threshold() {
+        let placed = placed(&["a"]);
+        let mut selection = Selection::default();
+        press(&mut selection, &placed, center(&placed[0]));
+        assert!(selection.dragged().is_empty());
     }
 
     // --- double-click ---------------------------------------------------------------
