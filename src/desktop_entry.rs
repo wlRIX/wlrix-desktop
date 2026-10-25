@@ -83,6 +83,9 @@ pub struct DesktopEntry {
     /// on screen is matched back to the launcher that would have started it; see
     /// [`crate::running`].
     pub startup_wm_class: Option<String>,
+    /// For a terminal emulator, the option that runs a command in it: `X-TerminalArgExec`,
+    /// from the xdg-terminal-exec specification. `None` means `-e`.
+    pub terminal_exec_arg: Option<String>,
     /// The entry's `[Desktop Action …]` groups, in the order they should be offered.
     pub actions: Vec<DesktopAction>,
 }
@@ -170,6 +173,10 @@ impl DesktopEntry {
             startup_wm_class: fields
                 .get("StartupWMClass")
                 .filter(|class| !class.is_empty())
+                .cloned(),
+            terminal_exec_arg: fields
+                .get("X-TerminalArgExec")
+                .filter(|arg| !arg.is_empty())
                 .cloned(),
             actions: actions(&all, fields.get("Actions").map(String::as_str), &localized),
         })

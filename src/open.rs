@@ -190,12 +190,17 @@ fn opener_argv(config: &Config, target: &str) -> Vec<String> {
 
 /// The command to wrap a `Terminal=true` program in.
 ///
-/// The configured value wins. Failing that: `xdg-terminal-exec`, the freedesktop answer to
-/// this question, which takes the command straight after it; then `$TERMINAL`; then whichever
-/// of [`KNOWN_TERMINALS`] is installed. All but the first take `-e`, which is near-universal.
+/// The configured value wins. Failing that: the user's choice in `xdg-terminals.list`, which
+/// the Desktop Utilities panel writes (see [`preferred_terminal`]); then `xdg-terminal-exec`,
+/// the freedesktop answer to this question, which takes the command straight after it; then
+/// `$TERMINAL`; then whichever of [`KNOWN_TERMINALS`] is installed. The last two take `-e`,
+/// which is near-universal.
 pub fn terminal_argv(config: &Config) -> Option<Vec<String>> {
     if let Some(configured) = config.terminal_command() {
         return Some(configured);
+    }
+    if let Some(preferred) = preferred_terminal(&terminal_lists(), &application_dirs()) {
+        return Some(preferred);
     }
     if on_path("xdg-terminal-exec") {
         return Some(vec!["xdg-terminal-exec".to_owned()]);
@@ -210,6 +215,84 @@ pub fn terminal_argv(config: &Config) -> Option<Vec<String>> {
         .iter()
         .find(|terminal| on_path(terminal))
         .map(|terminal| vec![(*terminal).to_owned(), "-e".to_owned()])
+}
+
+/// The terminal the xdg-terminal-exec preference lists name, as the command to put before a
+/// program: the entry's own `Exec`, then its `X-TerminalArgExec` or `-e`.
+///
+/// Read here rather than left to `xdg-terminal-exec`, because that is a separate package most
+/// machines do not have, and the choice should hold without it. An id that is named but not
+/// installed, or whose program is gone, is skipped rather than ending the search, as the
+/// specification says. A line's `+`/`-` prefix and `:action` suffix are its business; only a
+/// `-`, which excludes the entry, matters here.
+pub fn preferred_terminal(lists: &[PathBuf], application_dirs: &[PathBuf]) -> Option<Vec<String>> {
+    lists
+        .iter()
+        .filter_map(|list| std::fs::read_to_string(list).ok())
+        .flat_map(|text| terminal_ids(&text))
+        .find_map(|id| {
+            application_dirs.iter().find_map(|dir| {
+                let path = dir.join(&id);
+                let entry = DesktopEntry::from_path(&path)?;
+                let mut argv = entry.argv(&path).ok()?;
+                if !argv.first().is_some_and(|program| on_path(program)) {
+                    return None;
+                }
+                argv.push(entry.terminal_exec_arg.unwrap_or_else(|| "-e".to_owned()));
+                Some(argv)
+            })
+        })
+}
+
+/// The entry ids a preference list names, in order, without the excluded ones.
+fn terminal_ids(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with('-'))
+        .map(|line| line.trim_start_matches('+'))
+        .map(|line| line.split(':').next().unwrap_or(line).to_owned())
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
+/// The preference lists, most important first: `$XDG_CONFIG_HOME`, then each of
+/// `$XDG_CONFIG_DIRS`, and in each the desktop's own `<desktop>-xdg-terminals.list` before
+/// the plain one.
+fn terminal_lists() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = crate::xdg::user_config_dir().into_iter().collect();
+    let system = std::env::var_os("XDG_CONFIG_DIRS")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/etc/xdg".into());
+    dirs.extend(std::env::split_paths(&system));
+
+    let mut names: Vec<String> = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|desktop| !desktop.is_empty())
+        .map(|desktop| format!("{}-xdg-terminals.list", desktop.to_lowercase()))
+        .collect();
+    names.push("xdg-terminals.list".to_owned());
+
+    dirs.iter()
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .collect()
+}
+
+/// The `applications` directories, in precedence order.
+fn application_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let home = std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| crate::xdg::home().map(|home| home.join(".local/share")));
+    if let Some(home) = home {
+        dirs.push(home.join("applications"));
+    }
+    let system = std::env::var_os("XDG_DATA_DIRS")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    dirs.extend(std::env::split_paths(&system).map(|dir| dir.join("applications")));
+    dirs
 }
 
 /// Whether `program` is runnable: an absolute path as-is, a bare name via `PATH`.
@@ -560,6 +643,48 @@ mod tests {
             ]
         );
         assert_eq!(plan.directory.as_deref(), Some(Path::new("/tmp")));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_preferred_terminal_runs_with_its_own_exec_option() {
+        let dir = scratch("preferred-terminal");
+        let apps = dir.join("applications");
+        fs::create_dir_all(&apps).unwrap();
+        // /bin/sh stands in for a terminal: what matters is that it is on the machine.
+        fs::write(
+            apps.join("shell.desktop"),
+            "[Desktop Entry]\nType=Application\nExec=/bin/sh --login\nX-TerminalArgExec=-c\n",
+        )
+        .unwrap();
+        fs::write(
+            apps.join("plain.desktop"),
+            "[Desktop Entry]\nType=Application\nExec=/bin/sh\n",
+        )
+        .unwrap();
+        let list = dir.join("xdg-terminals.list");
+        fs::write(
+            &list,
+            "# mine\n-plain.desktop\ngone.desktop\n+shell.desktop:new-window\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            preferred_terminal(&[list], std::slice::from_ref(&apps)),
+            Some(vec![
+                "/bin/sh".to_owned(),
+                "--login".to_owned(),
+                "-c".to_owned()
+            ])
+        );
+
+        let second = dir.join("second.list");
+        fs::write(&second, "plain.desktop\n").unwrap();
+        assert_eq!(
+            preferred_terminal(&[dir.join("missing.list"), second], &[apps]),
+            Some(vec!["/bin/sh".to_owned(), "-e".to_owned()])
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
