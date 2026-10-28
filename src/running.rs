@@ -20,6 +20,11 @@
 //! applications that break it -- though only 17 of the 193 files on this machine declare one.
 //! So three candidates are tried, most reliable first, and compared case-insensitively because
 //! `Alacritty` and `alacritty` are the same application by any sensible reading.
+//!
+//! The reverse also happens: an application names its window in reverse-DNS form while its
+//! launcher does not (Dolphin Emulator's window is `org.DolphinEmu.dolphin-emu`, its
+//! `dolphin-emu.desktop` says nothing more). So a reverse-DNS `app_id`'s last component counts
+//! as a match too.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -84,7 +89,7 @@ impl Running {
     pub fn any(&self, identities: &[String]) -> bool {
         self.windows
             .values()
-            .any(|app_id| identities.iter().any(|name| name == app_id))
+            .any(|app_id| identities.iter().any(|name| matches(app_id, name)))
     }
 
     /// How many windows are being tracked. For the startup log and tests.
@@ -95,6 +100,15 @@ impl Running {
     pub fn is_empty(&self) -> bool {
         self.windows.is_empty()
     }
+}
+
+/// Whether a lowercased `app_id` is the application one of its launcher's identities names:
+/// equal, or a reverse-DNS id whose last component is that name.
+fn matches(app_id: &str, name: &str) -> bool {
+    app_id == name
+        || app_id
+            .rsplit_once('.')
+            .is_some_and(|(_, last)| last == name)
 }
 
 #[cfg(test)]
@@ -176,6 +190,26 @@ mod tests {
         let mut running = Running::default();
         running.window(1, "foot");
         assert!(running.any(&names));
+    }
+
+    #[test]
+    fn a_reverse_dns_app_id_matches_its_last_component() {
+        // Dolphin Emulator: the window says `org.DolphinEmu.dolphin-emu`, the launcher only
+        // `dolphin-emu`.
+        let entry = entry("[Desktop Entry]\nType=Application\nExec=dolphin-emu -u /games\n");
+        let names = identities(&entry, &path("dolphin-emu.desktop"));
+
+        let mut running = Running::default();
+        running.window(1, "org.DolphinEmu.dolphin-emu");
+        assert!(running.any(&names));
+    }
+
+    #[test]
+    fn only_the_whole_last_component_counts() {
+        let names = vec!["emu".to_string()];
+        let mut running = Running::default();
+        running.window(1, "org.DolphinEmu.dolphin-emu");
+        assert!(!running.any(&names));
     }
 
     #[test]
