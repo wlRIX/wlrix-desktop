@@ -13,6 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::desktop_entry::{DesktopEntry, EntryType};
+use crate::i18n::tr;
 use crate::mime::{self, Database};
 
 /// Which icon an entry gets.
@@ -98,7 +99,7 @@ pub fn dumpster(files: &Path, full: bool) -> Entry {
     Entry {
         path: files.to_path_buf(),
         name: DUMPSTER.to_owned(),
-        label: "Dumpster".to_owned(),
+        label: tr("Dumpster", "ごみ箱").to_owned(),
         kind: Kind::Dumpster,
         icon_names,
         launcher: None,

@@ -7,6 +7,7 @@
 pub mod config;
 pub mod desktop_entry;
 pub mod entries;
+pub mod i18n;
 pub mod icon_theme;
 pub mod layout;
 pub mod locale;

@@ -25,6 +25,7 @@
 //! desktop cannot describe.
 
 use crate::entries::LauncherAction;
+use crate::i18n::tr;
 use crate::layout::{Point, Rect};
 
 /// Height of an ordinary item row.
@@ -206,19 +207,31 @@ impl Menu {
     ) -> Self {
         let has_selection = selected > 0;
         let mut entries = vec![
-            Entry::header("Desktop"),
-            Entry::item(Action::LogOut, "Log Out", true),
+            Entry::header(tr("Desktop", "デスクトップ")),
+            Entry::item(Action::LogOut, tr("Log Out", "ログアウト"), true),
             Entry::separator(),
-            Entry::item(Action::Open, "Open", has_selection),
+            Entry::item(Action::Open, tr("Open", "開く"), has_selection),
             // The three below are the menu's shape from IRIX, kept so the layout is right and
             // the work to come has somewhere to land. Disabled until they do something.
-            Entry::item(Action::MakeCopy, "Make Copy", false),
-            Entry::item(Action::MakeReference, "Make Reference", false),
-            Entry::item(Action::Remove, "Remove", has_selection),
+            Entry::item(Action::MakeCopy, tr("Make Copy", "コピーを作成"), false),
+            Entry::item(
+                Action::MakeReference,
+                tr("Make Reference", "参照を作成"),
+                false,
+            ),
+            Entry::item(Action::Remove, tr("Remove", "削除"), has_selection),
             Entry::separator(),
-            Entry::item(Action::ChangePermissions, "Change Permissions", false),
-            Entry::item(Action::AddNewDirectory, "Add New Directory", false),
-            Entry::item(Action::SelectAll, "Select All", true),
+            Entry::item(
+                Action::ChangePermissions,
+                tr("Change Permissions", "アクセス権の変更"),
+                false,
+            ),
+            Entry::item(
+                Action::AddNewDirectory,
+                tr("Add New Directory", "新しいディレクトリを追加"),
+                false,
+            ),
+            Entry::item(Action::SelectAll, tr("Select All", "すべて選択"), true),
         ];
 
         // The launcher's own items go last, behind a separator of their own: they belong to one
@@ -238,7 +251,11 @@ impl Menu {
 
         if let Some(full) = dumpster {
             entries.push(Entry::separator());
-            entries.push(Entry::item(Action::EmptyDumpster, "Empty Dumpster", full));
+            entries.push(Entry::item(
+                Action::EmptyDumpster,
+                tr("Empty Dumpster", "ごみ箱を空にする"),
+                full,
+            ));
         }
 
         let width = width_for(&entries, &mut measure);
